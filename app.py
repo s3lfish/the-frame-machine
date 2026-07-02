@@ -230,17 +230,39 @@ def ban():
                    message="Banned and replaced with something new." if r.returncode == 0
                            else "Banned; the replacement failed: " + (r.stderr or "")[-160:])
 
+def _navigate(step):
+    """Step back (-1) / forward (+1) through the saved history images."""
+    nav = fp.history_navlist()
+    if len(nav) < 2:
+        return jsonify(ok=False, message="No history to browse yet — change the art a few times first.")
+    idx = fp.nav_get()
+    if not (0 <= idx < len(nav)):
+        idx = len(nav) - 1
+    new = idx + step
+    if new < 0:
+        return jsonify(ok=False, message="You're already at the oldest piece.")
+    if new >= len(nav):
+        return jsonify(ok=False, message="You're already at the newest piece.")
+    entry = nav[new]
+    tmp = os.path.join(tempfile.gettempdir(), "frame_nav.jpg")
+    shutil.copy(entry["file"], tmp)
+    r = subprocess.run([PYTHON, SCRIPT, "--force", "--files", tmp, "--no-record"],
+                       capture_output=True, text=True, timeout=300)
+    if r.returncode != 0:
+        return jsonify(ok=False, message="Couldn't switch: " + (r.stderr or "")[-160:])
+    fp.nav_set(new)
+    shutil.copy(entry["file"], fp.CURRENT_IMG)
+    fp.write_status(True, f"Showing {entry.get('title','art')}",
+                    {k: entry.get(k, "") for k in ("id", "title", "artist", "url", "source")})
+    return jsonify(ok=True, message=f"{entry.get('title','art')} — {new + 1} of {len(nav)}")
+
 @app.route("/back", methods=["POST"])
 def back():
-    if not os.path.exists(fp.PREVIOUS_IMG):
-        return jsonify(ok=False, message="No previous artwork to go back to yet.")
-    tmp = os.path.join(tempfile.gettempdir(), "frame_back.jpg")
-    shutil.copy(fp.PREVIOUS_IMG, tmp)     # a stable copy — the run swaps current/previous in place
-    r = subprocess.run([PYTHON, SCRIPT, "--force", "--files", tmp],
-                       capture_output=True, text=True, timeout=300)
-    return jsonify(ok=(r.returncode == 0),
-                   message="Went back to the previous piece." if r.returncode == 0
-                           else "Couldn't go back: " + (r.stderr or "")[-160:])
+    return _navigate(-1)
+
+@app.route("/forward", methods=["POST"])
+def forward():
+    return _navigate(+1)
 
 @app.route("/favourite", methods=["POST"])
 def favourite():
@@ -297,7 +319,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 
 <div class="actions" style="margin-bottom:16px">
  <button id="nowtop" style="background:var(--accent);color:#1c1c1e;border-color:var(--accent)">Change the art now</button>
- <button id="back" style="background:#303033;color:var(--ink)">← Go back</button>
+ <button id="back" style="background:#303033;color:var(--ink)">◀ Back</button>
+ <button id="fwd" style="background:#303033;color:var(--ink)">Forward ▶</button>
 </div>
 
 <div class="card" id="nowcard">
@@ -420,7 +443,7 @@ const el = {content:$('content'), source:$('source'), all_types:$('all_types'), 
   frequency:$('frequency'), time:$('time'), mat:$('mat'), mac:$('mac'), status:$('status'), pv:$('pv'),
   save:$('save'), prev:$('prev'), now:$('now'), historylist:$('historylist'),
   cur:$('cur'), laststatus:$('laststatus'), nowtitle:$('nowtitle'), nowmeta:$('nowmeta'),
-  pin:$('pin'), ban:$('ban'), fav:$('fav'), nowtop:$('nowtop'), back:$('back')};
+  pin:$('pin'), ban:$('ban'), fav:$('fav'), nowtop:$('nowtop'), back:$('back'), fwd:$('fwd')};
 function setSeg(val){document.querySelectorAll('#description button').forEach(b=>b.classList.toggle('on',b.dataset.v===val));
   el.tonerow.style.display = (val==='made-up') ? 'block' : 'none';}
 document.querySelectorAll('#description button').forEach(b=>b.onclick=()=>setSeg(b.dataset.v));
@@ -461,7 +484,10 @@ el.save.onclick=()=>post('/save',el.save,'Saving');
 el.prev.onclick=()=>post('/preview',el.prev,'Rendering a preview (can take ~20s)');
 el.now.onclick=async()=>{await post('/change-now',el.now,'Changing the art on your TV (can take a minute)');loadState();};
 el.nowtop.onclick=async()=>{await post('/change-now',el.nowtop,'Changing the art on your TV (can take a minute)');loadState();};
-el.back.onclick=async()=>{el.status.textContent='Going back…';const j=await (await fetch('/back',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
+async function nav(url,btn){el.status.textContent='Switching…';btn.disabled=true;const o=btn.textContent;
+  const j=await (await fetch(url,{method:'POST'})).json();el.status.textContent=j.message;btn.disabled=false;btn.textContent=o;loadState();}
+el.back.onclick=()=>nav('/back',el.back);
+el.fwd.onclick=()=>nav('/forward',el.fwd);
 async function loadState(){try{const j=await (await fetch('/state')).json(); const s=j.status||{};
   el.laststatus.textContent=(s.ok===false?'⚠ Last run failed: ':'Now showing · ')+(s.message||'');
   el.nowtitle.textContent=s.title?(s.title+(s.artist?(' — '+s.artist):'')):'';

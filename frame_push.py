@@ -145,10 +145,25 @@ STATUS = os.path.join(CFG, "status.json")   # last-run outcome, for alerts + the
 HISTORY = os.path.join(CFG, "history.json") # recently displayed pieces (for no-repeats + dashboard)
 BLOCKLIST = os.path.join(CFG, "blocklist.json")  # ids the user has banned
 CURRENT_IMG = os.path.join(CFG, "current.jpg")   # a copy of what's on the TV now (dashboard thumb)
-PREVIOUS_IMG = os.path.join(CFG, "previous.jpg") # the piece shown before it (for "go back")
+HIST_IMG_DIR = os.path.join(CFG, "history_imgs") # recent renders, kept so you can step back/forward
+NAV = os.path.join(CFG, "nav.json")              # where you currently are when browsing history
 FAVS_DIR = os.path.join(CFG, "favourites")       # saved favourite images
 FAVOURITES = os.path.join(CFG, "favourites.json")  # favourite metadata
+HISTORY_MAX = 40                            # how many past pieces (and their images) to keep
 LAST_PIECES = []                            # meta of pieces prepped this run (for status)
+
+def history_navlist():
+    """History entries whose saved image still exists — the pieces you can browse back to."""
+    return [h for h in _load_list(HISTORY) if h.get("file") and os.path.exists(h["file"])]
+
+def nav_get():
+    try:
+        return int(json.load(open(NAV)).get("index", -1))
+    except Exception:
+        return -1
+
+def nav_set(i):
+    _save_list(NAV, {"index": i})
 
 def _load_list(path):
     try:
@@ -868,16 +883,33 @@ def run(args):
 
     with open(HEARTBEAT, "w") as f:
         f.write(f"{datetime.datetime.now().isoformat(timespec='seconds')}  ip={ip}  uploaded={len(ids)}  replace={args.replace}\n")
+    import shutil
+    if args.no_record:                       # a history-browse display: don't extend history
+        print(f"\nDone. {len(ids)} uploaded (browsing).")
+        return
     piece = LAST_PIECES[0] if LAST_PIECES else {}
-    write_status(True, f"Displayed {piece.get('title','art')}",
-                 {"content_id": ids[0], **piece})
-    hist = _load_list(HISTORY)
-    hist.append({**piece, "content_id": ids[0], "when": datetime.datetime.now().isoformat(timespec="seconds")})
-    _save_list(HISTORY, hist[-200:])
+    histfile = ""
     try:
-        import shutil
-        if os.path.exists(CURRENT_IMG):
-            shutil.copy(CURRENT_IMG, PREVIOUS_IMG)   # keep the outgoing piece for "go back"
+        os.makedirs(HIST_IMG_DIR, exist_ok=True)
+        histfile = os.path.join(HIST_IMG_DIR, f"{int(time.time())}.jpg")
+        shutil.copy(paths[0], histfile)
+    except Exception:
+        histfile = ""
+    hist = _load_list(HISTORY)
+    hist.append({**piece, "content_id": ids[0],
+                 "when": datetime.datetime.now().isoformat(timespec="seconds"), "file": histfile})
+    hist = hist[-HISTORY_MAX:]
+    _save_list(HISTORY, hist)
+    keep = {h.get("file") for h in hist}     # drop image files that aged out of history
+    try:
+        for f in os.listdir(HIST_IMG_DIR):
+            if os.path.join(HIST_IMG_DIR, f) not in keep:
+                os.remove(os.path.join(HIST_IMG_DIR, f))
+    except Exception:
+        pass
+    nav_set(len(history_navlist()) - 1)      # cursor at the newest
+    write_status(True, f"Displayed {piece.get('title','art')}", {"content_id": ids[0], **piece})
+    try:
         shutil.copy(paths[0], CURRENT_IMG)
     except Exception:
         pass
@@ -923,6 +955,8 @@ def main():
     ap.add_argument("--preview", default=None, metavar="PATH",
                     help="render one image to PATH and exit — does not touch the TV")
     ap.add_argument("--force", action="store_true", help="change the art even if pinned")
+    ap.add_argument("--no-record", action="store_true",
+                    help="display without adding to history (used when browsing back/forward)")
     ap.add_argument("--mat", choices=MAT_COLORS, default=cfg["mat"])
     ap.add_argument("--files", nargs="*")
     ap.add_argument("--no-select", action="store_true")

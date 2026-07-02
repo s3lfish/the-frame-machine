@@ -112,7 +112,7 @@ The pairing token is saved to `~/.config/frame/token.txt` (tied to the TV, not t
 When the installer finishes it prints a link — open it on any phone or laptop on your network
 (e.g. `http://your-host.local:8080`). Everything lives here; no config files, no command line:
 
-- **Change the art now** or **Go back** to the previous piece, right at the top.
+- **Change the art now**, or step **◀ Back / Forward ▶** through the last ~40 pieces, right at the top.
 - **Caption:** none, the museum's own real caption, or a made-up tale — in ~18 voices (pirate,
   noir, Shakespearean, Attenborough, topical…), one picked at random.
 - **Content:** the whole museum, a single genre, a genre-a-day cycle, or *"only show art of
