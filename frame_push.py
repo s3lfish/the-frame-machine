@@ -34,7 +34,7 @@ CANVAS, MARGIN, JPEG_Q = (3840, 2160), 0.86, 90
 MET_SEARCH = "https://collectionapi.metmuseum.org/public/collection/v1/search"
 MET_OBJECT = "https://collectionapi.metmuseum.org/public/collection/v1/objects/{id}"
 MET_OBJECTS = "https://collectionapi.metmuseum.org/public/collection/v1/objects"  # every object id
-HEADERS = {"User-Agent": "frame-art/1.0 (https://github.com/OWNER/the-frame-machine)"}
+HEADERS = {"User-Agent": "frame-art/1.0 (https://github.com/s3lfish/the-frame-machine)"}
 # Full browser-ish header set — the Met's public www site sits behind a Vercel bot
 # check that 403/429s a bare User-Agent, but lets a complete header set through.
 BROWSER_HEADERS = {

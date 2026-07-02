@@ -38,7 +38,7 @@ to the TV directly over its local WebSocket API — no cloud, no account, no sub
 ## Setup
 
 ```bash
-git clone https://github.com/OWNER/the-frame-machine
+git clone https://github.com/s3lfish/the-frame-machine
 cd the-frame-machine
 pip install -r requirements.txt
 ```
