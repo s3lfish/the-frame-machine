@@ -145,6 +145,8 @@ STATUS = os.path.join(CFG, "status.json")   # last-run outcome, for alerts + the
 HISTORY = os.path.join(CFG, "history.json") # recently displayed pieces (for no-repeats + dashboard)
 BLOCKLIST = os.path.join(CFG, "blocklist.json")  # ids the user has banned
 CURRENT_IMG = os.path.join(CFG, "current.jpg")   # a copy of what's on the TV now (dashboard thumb)
+FAVS_DIR = os.path.join(CFG, "favourites")       # saved favourite images
+FAVOURITES = os.path.join(CFG, "favourites.json")  # favourite metadata
 LAST_PIECES = []                            # meta of pieces prepped this run (for status)
 
 def _load_list(path):
@@ -386,14 +388,23 @@ TONES = {
     "corporate":    "soulless corporate-speak — synergy, deliverables, circling back, leveraging learnings",
     "genz":         "chaotic Gen-Z internet slang — no cap, unserious, it's giving, lowkey iconic, core",
     "attenborough": "a hushed David-Attenborough nature-documentary narration, observing it like rare wildlife",
-    "roast":        "a savage but affectionate roast of the piece, like a snobby critic who's had quite enough",
-    "compliment":   "a lavish, over-the-top compliment aimed at YOU, the viewer, inspired by the piece",
+    "sarcastic":    "a dry, deadpan, sarcastic remark — mock-unimpressed, heavy eye-roll, faux boredom",
+    "topical":      "a wry, tongue-in-cheek link to current events",
     "firstperson":  "narrated in first person BY the main subject of the artwork, describing their day",
     "trailer":      "a booming movie-trailer voiceover — 'In a world…', dramatic pauses, high stakes",
     "gossip":       "breathless tabloid gossip about the artwork and everyone supposedly in it",
     "dadjoke":      "groan-worthy dad jokes and puns inspired by the artwork's subject",
     "fairytale":    "the opening of a storybook fairy tale — 'Once upon a time…' — cosy and enchanted",
 }
+
+def _headline():
+    """A recent news headline (BBC RSS, keyless) so the 'topical' tone is actually topical."""
+    r = http_get("https://feeds.bbci.co.uk/news/rss.xml", timeout=10)
+    if not r:
+        return None
+    titles = re.findall(r"<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>", r.text)
+    heads = [t.strip() for t in titles[1:] if t.strip()]   # [0] is the feed's own title
+    return random.choice(heads[:10]) if heads else None
 
 def ai_blurb(meta, tone="whimsical"):
     """Fallback when there's no real prose: a deliberately fake, self-evidently invented
@@ -410,6 +421,11 @@ def ai_blurb(meta, tone="whimsical"):
     facts = ", ".join(f"{k}: {meta[k]}" for k in ("artist", "title", "date", "medium",
              "culture", "objectName") if meta.get(k))
     style = TONES.get(tone, TONES["whimsical"])
+    if tone == "topical":
+        head = _headline()
+        if head:
+            style = ("a witty, tongue-in-cheek connection between this artwork and a REAL recent "
+                     f'news headline. The headline is: "{head}". Riff on it with a knowing wink')
     try:
         r = requests.post("https://api.anthropic.com/v1/messages",
             headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
@@ -720,14 +736,19 @@ def notify(msg):
         pass
 
 # ---------- main ----------
-def _gather(args, mat_rgb, count):
-    """Fetch `count` matted images from the chosen source (files / Met / Cleveland / any)."""
-    if args.files:
-        return prep_local(args.files, mat_rgb)
+def favourite_pick():
+    """A random saved favourite image path (and set it as the 'prepped' piece), or None."""
+    favs = [f for f in _load_list(FAVOURITES) if os.path.exists(f.get("file", ""))]
+    if not favs:
+        return None
+    fav = random.choice(favs)
+    LAST_PIECES.clear()
+    LAST_PIECES.append({k: fav.get(k, "") for k in ("title", "artist", "url", "source", "id")})
+    return fav["file"]
+
+def _fetch_source(args, mat_rgb, count):
     avoid = {str(x) for x in _load_list(BLOCKLIST)} | {str(h.get("id")) for h in _load_list(HISTORY)[-40:]}
-    src = args.source
-    if src == "any":
-        src = random.choice(["met", "cleveland"])
+    src = random.choice(["met", "cleveland"]) if args.source == "any" else args.source
     if src == "cleveland":
         return fetch_cleveland(count, args.query, mat_rgb, args.theme, args.placard,
                                args.describe, args.types, args.qr, args.tone, avoid,
@@ -735,6 +756,23 @@ def _gather(args, mat_rgb, count):
     return fetch_matted(count, args.query, mat_rgb, args.theme, args.placard, args.all_types,
                         args.describe, args.types, args.qr, args.tone, avoid, args.seasonal,
                         args.hemisphere, args.subject, args.holidays)
+
+def _gather(args, mat_rgb, count):
+    """Fetch `count` matted images (files / Met / Cleveland / any), with favourites mixed in
+    and used as a graceful fallback if fresh art can't be fetched."""
+    if args.files:
+        return prep_local(args.files, mat_rgb)
+    # favourites get a ~1-in-5 chance of reappearing
+    if random.random() < 0.2:
+        fav = favourite_pick()
+        if fav:
+            print("  ★ reshowing a favourite"); return [fav]
+    paths = _fetch_source(args, mat_rgb, count)
+    if not paths:                              # couldn't get new art -> fall back to a favourite
+        fav = favourite_pick()
+        if fav:
+            print("  ★ no fresh art — reshowing a favourite"); return [fav]
+    return paths
 
 def run(args):
     mat_rgb = MAT_COLORS[args.mat]

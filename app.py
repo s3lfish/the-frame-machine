@@ -230,6 +230,24 @@ def ban():
                    message="Banned and replaced with something new." if r.returncode == 0
                            else "Banned; the replacement failed: " + (r.stderr or "")[-160:])
 
+@app.route("/favourite", methods=["POST"])
+def favourite():
+    st = _read_status()
+    if not st.get("id") or not os.path.exists(fp.CURRENT_IMG):
+        return jsonify(ok=False, message="Nothing on the TV to favourite yet.")
+    os.makedirs(fp.FAVS_DIR, exist_ok=True)
+    dest = os.path.join(fp.FAVS_DIR, st["id"].replace(":", "_") + ".jpg")
+    try:
+        import shutil; shutil.copy(fp.CURRENT_IMG, dest)
+    except Exception as e:
+        return jsonify(ok=False, message=f"Couldn't save favourite: {str(e)[:120]}")
+    favs = fp._load_list(fp.FAVOURITES)
+    if not any(x.get("id") == st["id"] for x in favs):
+        favs.append({"id": st["id"], "title": st.get("title", ""), "artist": st.get("artist", ""),
+                     "url": st.get("url", ""), "source": st.get("source", ""), "file": dest})
+        fp._save_list(fp.FAVOURITES, favs)
+    return jsonify(ok=True, message="♥ Added to favourites — it'll turn up more often.")
+
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>The Frame Machine</title>
@@ -273,7 +291,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    <div id="nowtitle" style="font-weight:600;margin-top:4px"></div>
    <div class="sub" id="nowmeta"></div>
    <div class="actions" style="margin-top:12px">
-    <button id="pin" style="background:#303033;color:var(--ink)">Keep this one</button>
+    <button id="fav" style="background:#303033;color:var(--ink)">♥ Favourite</button>
+    <button id="pin" style="background:#303033;color:var(--ink)">Stop this from changing</button>
     <button id="ban" style="background:#303033;color:var(--ink)">Never show again</button>
    </div>
   </div>
@@ -383,7 +402,8 @@ const el = {content:$('content'), source:$('source'), all_types:$('all_types'), 
   ntfy_topic:$('ntfy_topic'), password:$('password'),
   frequency:$('frequency'), time:$('time'), mat:$('mat'), mac:$('mac'), status:$('status'), pv:$('pv'),
   save:$('save'), prev:$('prev'), now:$('now'), historylist:$('historylist'),
-  cur:$('cur'), laststatus:$('laststatus'), nowtitle:$('nowtitle'), nowmeta:$('nowmeta'), pin:$('pin'), ban:$('ban')};
+  cur:$('cur'), laststatus:$('laststatus'), nowtitle:$('nowtitle'), nowmeta:$('nowmeta'),
+  pin:$('pin'), ban:$('ban'), fav:$('fav')};
 function setSeg(val){document.querySelectorAll('#description button').forEach(b=>b.classList.toggle('on',b.dataset.v===val));
   el.tonerow.style.display = (val==='made-up') ? 'block' : 'none';}
 document.querySelectorAll('#description button').forEach(b=>b.onclick=()=>setSeg(b.dataset.v));
@@ -428,14 +448,15 @@ async function loadState(){try{const j=await (await fetch('/state')).json(); con
   el.nowtitle.textContent=s.title?(s.title+(s.artist?(' — '+s.artist):'')):'';
   el.nowmeta.textContent=[s.source,s.when&&s.when.replace('T',' ')].filter(Boolean).join(' · ');
   if(j.has_image){el.cur.src='/current.jpg?t='+Date.now();el.cur.style.display='block';}
-  el.pin.textContent=j.pinned?'Let it change':'Keep this one'; el.pin.classList.toggle('on',j.pinned);
+  el.pin.textContent=j.pinned?'Let it change again':'Stop this from changing'; el.pin.classList.toggle('on',j.pinned);
   el.historylist.innerHTML=(j.history&&j.history.length)? j.history.map(h=>{
     const t=(h.url?`<a href="${h.url}" target="_blank" style="color:var(--ink)">${h.title||'?'}</a>`:(h.title||'?'));
     return `<div style="padding:5px 0;border-bottom:1px solid var(--line)">${t} <span style="opacity:.6">— ${h.source||''} · ${(h.when||'').replace('T',' ')}</span></div>`;
   }).join('') : 'Nothing yet.';
 }catch(e){}}
 el.pin.onclick=async()=>{const j=await (await fetch('/pin',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
-el.ban.onclick=async()=>{el.status.textContent='Banning & replacing…';const j=await (await fetch('/ban',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
+el.ban.onclick=async()=>{el.status.textContent='Finding a replacement…';const j=await (await fetch('/ban',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
+el.fav.onclick=async()=>{const j=await (await fetch('/favourite',{method:'POST'})).json();el.status.textContent=j.message;};
 loadState();
 </script></body></html>"""
 

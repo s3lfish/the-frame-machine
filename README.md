@@ -47,9 +47,11 @@ to the genuine museum page.
 - **Two museums.** The Met *and* the Cleveland Museum of Art (both keyless, CC0) — pick one or
   let it choose either at random. Resilient if one source ever changes.
 - **Caption voices.** Made-up tales in ~18 tones — whimsical, noir, epic, haiku, limerick,
-  conspiracy, pirate, Shakespearean, corporate, Gen-Z, Attenborough, roast, compliment,
-  first-person, movie-trailer, tabloid gossip, dad-jokes, fairytale. Tick several; one is
-  picked at random each time.
+  conspiracy, pirate, Shakespearean, corporate, Gen-Z, Attenborough, sarcastic, **topical**
+  (ties the piece to a real, current news headline), first-person, movie-trailer, tabloid
+  gossip, dad-jokes, fairytale. Tick several; one is picked at random each time.
+- **Favourites & graceful fallback.** ♥ a piece and it reappears more often — and if fresh art
+  ever can't be fetched, the Frame quietly re-shows a favourite instead of going blank.
 - **Subject & holiday modes.** Ask for "only show art of cats" (or dogs, dragons, anything),
   or let it get festive — spooky art near Halloween, nativities at Christmas, hearts for
   Valentine's.
