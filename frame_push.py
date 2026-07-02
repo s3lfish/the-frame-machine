@@ -751,8 +751,8 @@ def run(args):
         return
 
     if load_config().get("pinned") and not args.force and not args.files:
-        print("Pinned — leaving the current art in place.")
-        write_status(True, "Pinned — art left unchanged", LAST_PIECES[0] if LAST_PIECES else {})
+        print("Kept — leaving the current art in place.")
+        write_status(True, "Kept — art left unchanged", LAST_PIECES[0] if LAST_PIECES else {})
         return
     if not args.mac:
         raise RuntimeError("No TV MAC set. Pass --mac AA:BB:CC:DD:EE:FF, or set FRAME_MAC in "

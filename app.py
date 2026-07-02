@@ -214,8 +214,8 @@ def pin():
     newv = not fp.load_config().get("pinned")
     save_config({"pinned": newv})
     return jsonify(ok=True, pinned=newv,
-                   message="Pinned — the art will stay put until you unpin." if newv
-                           else "Unpinned — it'll change on schedule again.")
+                   message="Kept — this piece will stay up until you let it change." if newv
+                           else "Off — the art will change on schedule again.")
 
 @app.route("/ban", methods=["POST"])
 def ban():
@@ -258,20 +258,23 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #status{min-height:20px;margin:12px 2px;color:var(--sub);font-size:14px}
  img#pv{width:100%;border-radius:12px;margin-top:12px;display:none;border:1px solid var(--line)}
  details summary{cursor:pointer;color:var(--sub)} details input{margin-top:8px}
+ .nowrow{display:flex;gap:16px;align-items:flex-start}
+ #cur{width:190px;border-radius:8px;border:1px solid var(--line);display:none}
+ @media(max-width:520px){.nowrow{flex-direction:column}#cur{width:100%}}
 </style></head><body><div class="wrap">
 <h1>The Frame Machine</h1>
 <p class="muted">Choose what your Frame shows, and when it changes.</p>
 
 <div class="card" id="nowcard">
- <div style="display:flex;gap:16px;align-items:flex-start">
-  <img id="cur" style="width:190px;border-radius:8px;border:1px solid var(--line);display:none">
+ <div class="nowrow">
+  <img id="cur">
   <div style="flex:1;min-width:0">
    <div class="sub" id="laststatus">Loading…</div>
    <div id="nowtitle" style="font-weight:600;margin-top:4px"></div>
    <div class="sub" id="nowmeta"></div>
    <div class="actions" style="margin-top:12px">
-    <button id="pin" style="background:#303033;color:var(--ink)">Pin</button>
-    <button id="ban" style="background:#303033;color:var(--ink)">Ban this</button>
+    <button id="pin" style="background:#303033;color:var(--ink)">Keep this one</button>
+    <button id="ban" style="background:#303033;color:var(--ink)">Never show again</button>
    </div>
   </div>
  </div>
@@ -425,7 +428,7 @@ async function loadState(){try{const j=await (await fetch('/state')).json(); con
   el.nowtitle.textContent=s.title?(s.title+(s.artist?(' — '+s.artist):'')):'';
   el.nowmeta.textContent=[s.source,s.when&&s.when.replace('T',' ')].filter(Boolean).join(' · ');
   if(j.has_image){el.cur.src='/current.jpg?t='+Date.now();el.cur.style.display='block';}
-  el.pin.textContent=j.pinned?'Unpin':'Pin'; el.pin.classList.toggle('on',j.pinned);
+  el.pin.textContent=j.pinned?'Let it change':'Keep this one'; el.pin.classList.toggle('on',j.pinned);
   el.historylist.innerHTML=(j.history&&j.history.length)? j.history.map(h=>{
     const t=(h.url?`<a href="${h.url}" target="_blank" style="color:var(--ink)">${h.title||'?'}</a>`:(h.title||'?'));
     return `<div style="padding:5px 0;border-bottom:1px solid var(--line)">${t} <span style="opacity:.6">— ${h.source||''} · ${(h.when||'').replace('T',' ')}</span></div>`;
