@@ -145,6 +145,7 @@ STATUS = os.path.join(CFG, "status.json")   # last-run outcome, for alerts + the
 HISTORY = os.path.join(CFG, "history.json") # recently displayed pieces (for no-repeats + dashboard)
 BLOCKLIST = os.path.join(CFG, "blocklist.json")  # ids the user has banned
 CURRENT_IMG = os.path.join(CFG, "current.jpg")   # a copy of what's on the TV now (dashboard thumb)
+PREVIOUS_IMG = os.path.join(CFG, "previous.jpg") # the piece shown before it (for "go back")
 FAVS_DIR = os.path.join(CFG, "favourites")       # saved favourite images
 FAVOURITES = os.path.join(CFG, "favourites.json")  # favourite metadata
 LAST_PIECES = []                            # meta of pieces prepped this run (for status)
@@ -874,7 +875,10 @@ def run(args):
     hist.append({**piece, "content_id": ids[0], "when": datetime.datetime.now().isoformat(timespec="seconds")})
     _save_list(HISTORY, hist[-200:])
     try:
-        import shutil; shutil.copy(paths[0], CURRENT_IMG)
+        import shutil
+        if os.path.exists(CURRENT_IMG):
+            shutil.copy(CURRENT_IMG, PREVIOUS_IMG)   # keep the outgoing piece for "go back"
+        shutil.copy(paths[0], CURRENT_IMG)
     except Exception:
         pass
     print(f"\nDone. {len(ids)} uploaded. Heartbeat: {HEARTBEAT}")

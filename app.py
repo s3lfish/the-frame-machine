@@ -11,7 +11,7 @@ for its defaults) and, on macOS, manages the launchd schedule from the frequency
 you pick. Run it with:  python3 app.py   (add --port 8080 to change the port)
 """
 
-import argparse, json, os, platform, subprocess, sys, tempfile, time
+import argparse, json, os, platform, shutil, subprocess, sys, tempfile, time
 import secrets
 from flask import Flask, request, jsonify, send_file, render_template_string, session, redirect
 
@@ -230,6 +230,18 @@ def ban():
                    message="Banned and replaced with something new." if r.returncode == 0
                            else "Banned; the replacement failed: " + (r.stderr or "")[-160:])
 
+@app.route("/back", methods=["POST"])
+def back():
+    if not os.path.exists(fp.PREVIOUS_IMG):
+        return jsonify(ok=False, message="No previous artwork to go back to yet.")
+    tmp = os.path.join(tempfile.gettempdir(), "frame_back.jpg")
+    shutil.copy(fp.PREVIOUS_IMG, tmp)     # a stable copy — the run swaps current/previous in place
+    r = subprocess.run([PYTHON, SCRIPT, "--force", "--files", tmp],
+                       capture_output=True, text=True, timeout=300)
+    return jsonify(ok=(r.returncode == 0),
+                   message="Went back to the previous piece." if r.returncode == 0
+                           else "Couldn't go back: " + (r.stderr or "")[-160:])
+
 @app.route("/favourite", methods=["POST"])
 def favourite():
     st = _read_status()
@@ -282,6 +294,11 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 </style></head><body><div class="wrap">
 <h1>The Frame Machine</h1>
 <p class="muted">Choose what your Frame shows, and when it changes.</p>
+
+<div class="actions" style="margin-bottom:16px">
+ <button id="nowtop" style="background:var(--accent);color:#1c1c1e;border-color:var(--accent)">Change the art now</button>
+ <button id="back" style="background:#303033;color:var(--ink)">← Go back</button>
+</div>
 
 <div class="card" id="nowcard">
  <div class="nowrow">
@@ -403,7 +420,7 @@ const el = {content:$('content'), source:$('source'), all_types:$('all_types'), 
   frequency:$('frequency'), time:$('time'), mat:$('mat'), mac:$('mac'), status:$('status'), pv:$('pv'),
   save:$('save'), prev:$('prev'), now:$('now'), historylist:$('historylist'),
   cur:$('cur'), laststatus:$('laststatus'), nowtitle:$('nowtitle'), nowmeta:$('nowmeta'),
-  pin:$('pin'), ban:$('ban'), fav:$('fav')};
+  pin:$('pin'), ban:$('ban'), fav:$('fav'), nowtop:$('nowtop'), back:$('back')};
 function setSeg(val){document.querySelectorAll('#description button').forEach(b=>b.classList.toggle('on',b.dataset.v===val));
   el.tonerow.style.display = (val==='made-up') ? 'block' : 'none';}
 document.querySelectorAll('#description button').forEach(b=>b.onclick=()=>setSeg(b.dataset.v));
@@ -443,6 +460,8 @@ async function post(url,btn,label){el.status.textContent=label+'…';
 el.save.onclick=()=>post('/save',el.save,'Saving');
 el.prev.onclick=()=>post('/preview',el.prev,'Rendering a preview (can take ~20s)');
 el.now.onclick=async()=>{await post('/change-now',el.now,'Changing the art on your TV (can take a minute)');loadState();};
+el.nowtop.onclick=async()=>{await post('/change-now',el.nowtop,'Changing the art on your TV (can take a minute)');loadState();};
+el.back.onclick=async()=>{el.status.textContent='Going back…';const j=await (await fetch('/back',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
 async function loadState(){try{const j=await (await fetch('/state')).json(); const s=j.status||{};
   el.laststatus.textContent=(s.ok===false?'⚠ Last run failed: ':'Now showing · ')+(s.message||'');
   el.nowtitle.textContent=s.title?(s.title+(s.artist?(' — '+s.artist):'')):'';

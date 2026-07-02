@@ -60,6 +60,31 @@ json.dump(c,open(p,"w"),indent=2)
 print("  ✓ Saved settings to ~/.config/frame/config.json")
 PY
 
+# 4b. Optional: the AI "made-up caption" voices need an Anthropic API key.
+KEYFILE="$CFG/anthropic_key.txt"
+if [ -s "$KEYFILE" ]; then
+  echo "  ✓ Anthropic key already set — made-up captions enabled"
+else
+  echo
+  echo "  The fun 'made-up caption' voices (pirate, noir, topical…) are written by Claude and"
+  echo "  need an Anthropic API key — a few cents a month. You can skip and add it later."
+  printf "  Set one up now? [y/N] "; read -r WANTKEY
+  case "$WANTKEY" in
+    y|Y)
+      echo "    1. Open  https://console.anthropic.com/settings/keys  and sign in (or sign up)."
+      echo "    2. Click 'Create Key', give it a name, then copy the key (it starts with sk-ant-)."
+      printf "    Paste your key (it won't display): "; read -rs KEY; echo
+      if [ -n "$KEY" ]; then
+        (umask 077; printf '%s' "$KEY" > "$KEYFILE")
+        echo "  ✓ Key saved to $KEYFILE — made-up captions enabled."
+      else
+        echo "  • No key entered — skipping. Captions will use the museum's real text."
+      fi ;;
+    *)
+      echo "  • Skipped. Add a key any time by putting it in $KEYFILE" ;;
+  esac
+fi
+
 # 5. Install the always-on control panel + note about scheduling
 PORT=8080
 OS="$(uname)"

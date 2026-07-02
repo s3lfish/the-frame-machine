@@ -107,64 +107,23 @@ python3 frame_push.py --fetch 1 --placard --replace   # first run shows an "Allo
 The pairing token is saved to `~/.config/frame/token.txt` (tied to the TV, not the IP).
 </details>
 
-## Usage
+## The control panel
 
-```bash
-# One random piece from the whole collection, museum layout + invented story + QR
-python3 frame_push.py --fetch 1 --theme museum --placard --all-types --describe --replace
+When the installer finishes it prints a link — open it on any phone or laptop on your network
+(e.g. `http://your-host.local:8080`). Everything lives here; no config files, no command line:
 
-# A different genre each day
-python3 frame_push.py --fetch 1 --theme cycle --placard --replace
+- **Change the art now** or **Go back** to the previous piece, right at the top.
+- **Caption:** none, the museum's own real caption, or a made-up tale — in ~18 voices (pirate,
+  noir, Shakespearean, Attenborough, topical…), one picked at random.
+- **Content:** the whole museum, a single genre, a genre-a-day cycle, or *"only show art of
+  cats"*. Match the season or celebrate holidays. Pick the museum (the Met, Cleveland, or either).
+- **Object types**, **mat colour**, and a **QR-code** toggle.
+- **How often & when** the art changes — the panel builds the schedule for you (launchd on
+  macOS, cron on Linux).
+- **♥ Favourite** a piece (it returns more often), **Stop this from changing**, or **Never show
+  again** — plus a **history** of recent pieces.
 
-# Pin one style, or free-text search
-python3 frame_push.py --fetch 1 --theme old-masters --placard --replace
-python3 frame_push.py --fetch 1 --query Hiroshige --placard --replace
-
-# Push your own images
-python3 frame_push.py --files a.jpg b.jpg
-```
-
-Key flags: `--theme {impressionist,ukiyo-e,old-masters,landscape,mix,cycle,museum}`,
-`--placard` (gallery label), `--all-types` (allow sculpture/objects, not just wall art),
-`--describe` (add a story), `--mat {off_white,linen,charcoal,black}`, `--replace`,
-`--slideshow N`. Run `--help` for all.
-
-### Descriptions & the optional Anthropic key
-
-`--describe` writes a short, deliberately silly invented tale for each piece using Claude, and
-adds a QR code to the real Met page. It's dormant unless you provide a key:
-
-```bash
-echo 'sk-ant-...' > ~/.config/frame/anthropic_key.txt   # or set ANTHROPIC_API_KEY
-```
-
-Cost is a fraction of a cent per run. Without a key, `--describe` simply shows the factual
-label (no story). *(A `met_prose()` helper that scrapes the Met's own real captions is included
-but unused by default — see the code if you'd prefer authentic captions to invented ones.)*
-
-## Web control panel (recommended)
-
-Instead of editing flags, run the little web app and control everything from your phone:
-
-```bash
-python3 app.py --port 8080     # then open http://<this-machine>.local:8080
-```
-
-It offers **Caption** (None / Real Met caption / Made-up tale), **Content** (whole museum, the
-daily genre cycle, or a single genre), **object types** (tick "All", or uncheck it to choose
-specific families — Paintings, Prints, Sculpture, Ceramics, Photographs, Glass, …), a **QR-code
-toggle**, **mat colour**, and **how often / when** the art changes — plus **Preview** and
-**Change the art now**. It writes
-`~/.config/frame/config.json` (which `frame_push.py` reads for its defaults) and, on macOS,
-creates and reloads the daily launchd schedule for you from the frequency/time you pick.
-
-When you set the frequency/time, the panel builds the recurring job for you — a **launchd**
-agent on macOS, or a **cron** entry on Linux.
-
-To keep the panel always running, install it as a service with the template
-`com.example.frameart-gui.plist` (fill the `__PLACEHOLDERS__`, then bootstrap it — same steps as
-below). macOS may ask once to "allow incoming connections" for Python — approve it so other
-devices can reach the page.
+The panel writes `~/.config/frame/config.json`; you can also edit that by hand.
 
 ### Docker (Linux / Raspberry Pi)
 
@@ -172,21 +131,34 @@ devices can reach the page.
 FRAME_MAC=AA:BB:CC:DD:EE:FF docker compose up -d   # then open http://<host>:8080
 ```
 
-Host networking is used so the container can discover and wake the TV (works on Linux/Pi; not
-on Docker Desktop for Mac). Your `~/.config/frame` is mounted in, so the pairing token, settings
-and history persist. For scheduled changes, either set the schedule in the panel (writes cron
-inside the container) or run `docker exec` from the host's crontab.
+Host networking lets the container discover and wake the TV (works on Linux/Pi; not on Docker
+Desktop for Mac). `~/.config/frame` is mounted in, so the pairing token, settings and history
+persist. For scheduled changes, set the schedule in the panel (writes cron inside the container).
 
-### config.json
+## Command line (optional)
 
-Everything the panel sets lives in `~/.config/frame/config.json`, e.g.:
+Prefer the terminal? `frame_push.py` does everything via flags (they override `config.json`):
 
-```json
-{ "mac": "AA:BB:CC:DD:EE:FF", "description": "made-up", "content": "museum",
-  "all_types": true, "mat": "charcoal", "frequency": "daily", "time": "07:30" }
+```bash
+python3 frame_push.py --theme museum --describe made-up     # a random piece + a tall tale
+python3 frame_push.py --source cleveland --subject cats     # Cleveland, cats only
+python3 frame_push.py --files a.jpg b.jpg                    # push your own images
 ```
 
-You can edit it by hand instead of using the panel; CLI flags override it per-run.
+Run `python3 frame_push.py --help` for every flag.
+
+### Made-up captions & the Anthropic key
+
+The made-up tales are written by Claude, so they need an Anthropic API key — **the installer
+offers to set this up for you**. To do it by hand instead:
+
+```bash
+echo 'sk-ant-...' > ~/.config/frame/anthropic_key.txt   # or set ANTHROPIC_API_KEY
+```
+
+Get a key at [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
+(sign in, **Create Key**, copy it). It costs a fraction of a cent per run. Without a key,
+captions fall back to the museum's own text (or nothing).
 
 ## Running it daily (without the panel)
 
