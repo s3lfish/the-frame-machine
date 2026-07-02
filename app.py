@@ -275,7 +275,6 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 </div>
 
 <div class="card">
- <label class="f">Caption <span class="sub">— the story under each piece</span></label>
  <label class="chk"><input type="checkbox" id="placard">
    <span>Museum label <span class="sub">— artist, title &amp; details beside the art (off = just the artwork, no captions)</span></span></label>
  <div id="captionopts">

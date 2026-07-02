@@ -582,7 +582,7 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
 CLE_API = "https://openaccess-api.clevelandart.org/api/artworks/"
 CLE_NAME = "Cleveland Museum of Art"
 
-def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north"):
+def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", all_types=True):
     """Second source: Cleveland Museum of Art open access (keyless, CC0). Its API carries
     a real 'description', so 'real' captions need no scraping."""
     os.makedirs(TMP, exist_ok=True); LAST_PIECES.clear()
@@ -614,8 +614,10 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
             if o.get("share_license_status") != "CC0" or f"cle:{o.get('id')}" in avoid:
                 continue
             typ = (o.get("type") or "").lower()
-            if types and not any(k in typ for t in types for k in TYPE_FILTERS.get(t, ())):
-                continue
+            if not all_types:
+                allowed = tuple(k for t in types for k in TYPE_FILTERS.get(t, ())) if types else CLASS_OK
+                if not any(k in typ for k in allowed):
+                    continue
             imgs = o.get("images") or {}
             url = ((imgs.get("print") or imgs.get("web") or {}).get("url"))
             if not url:
@@ -682,7 +684,8 @@ def _gather(args, mat_rgb, count):
         src = random.choice(["met", "cleveland"])
     if src == "cleveland":
         return fetch_cleveland(count, args.query, mat_rgb, args.theme, args.placard,
-                               args.describe, args.types, args.qr, args.tone, avoid, args.seasonal, args.hemisphere)
+                               args.describe, args.types, args.qr, args.tone, avoid,
+                               args.seasonal, args.hemisphere, args.all_types)
     return fetch_matted(count, args.query, mat_rgb, args.theme, args.placard, args.all_types,
                         args.describe, args.types, args.qr, args.tone, avoid, args.seasonal, args.hemisphere)
 
