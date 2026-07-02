@@ -97,6 +97,33 @@ def seasonal_terms(hemisphere="north"):
         m = (m + 5) % 12 + 1
     season = ("winter", "spring", "summer", "autumn")[((m % 12) // 3)]
     return SEASON_TERMS[season]
+
+# Date-ranged holiday search bias (month,day) inclusive; last range wraps the year end.
+HOLIDAYS = [
+    ((10, 24), (10, 31), ["skeleton", "skull", "witch", "ghost", "death", "devil"]),   # Halloween
+    ((12, 20), (12, 27), ["nativity", "angel", "snow", "adoration of the magi"]),       # Christmas
+    ((2, 10),  (2, 15),  ["lovers", "cupid", "romance", "embrace"]),                    # Valentine's
+    ((12, 30), (1, 2),   ["feast", "celebration", "fireworks"]),                        # New Year
+]
+def holiday_terms():
+    md = (datetime.date.today().month, datetime.date.today().day)
+    for start, end, terms in HOLIDAYS:
+        within = (start <= md <= end) if start <= end else (md >= start or md <= end)
+        if within:
+            return terms
+    return None
+
+def bias_terms(subject="", holidays=False, seasonal=False, hemisphere="north"):
+    """The search terms a special mode wants, in priority order, or None for 'normal'."""
+    if subject and subject.strip():
+        return [subject.strip()]
+    if holidays:
+        h = holiday_terms()
+        if h:
+            return h
+    if seasonal:
+        return seasonal_terms(hemisphere)
+    return None
 TMP = "/tmp/frame_art"
 # Your Frame's wireless MAC — set it here or via the FRAME_MAC env var / --mac.
 # Find it on the TV: Settings > General/Support > About This TV (or your router).
@@ -112,7 +139,8 @@ DEFAULTS = {"mac": "", "ip": None, "description": "made-up", "content": "museum"
             "all_types": True, "types": [], "placard": True, "qr": True, "mat": "charcoal",
             "fetch": 1, "replace": True, "frequency": "daily", "time": "07:30",
             "ntfy_topic": "", "tone": ["whimsical"], "source": "met", "orientation": "landscape",
-            "pinned": False, "seasonal": False, "hemisphere": "north"}
+            "pinned": False, "seasonal": False, "hemisphere": "north",
+            "subject": "", "holidays": False}
 STATUS = os.path.join(CFG, "status.json")   # last-run outcome, for alerts + the dashboard
 HISTORY = os.path.join(CFG, "history.json") # recently displayed pieces (for no-repeats + dashboard)
 BLOCKLIST = os.path.join(CFG, "blocklist.json")  # ids the user has banned
@@ -344,14 +372,27 @@ def met_prose(object_url):
             best = inner
     return _truncate_prose(best) if len(best) >= 40 else None
 
-# Caption "tones" for the made-up tale — one instruction each, chosen in the GUI.
+# Caption "tones/voices" for the made-up tale — one instruction each. The GUI lists
+# them as checkboxes (add one here and it appears automatically); one is picked per run.
 TONES = {
-    "whimsical":   "a joyfully absurd, tongue-in-cheek tall tale (secret purposes, imagined former owners, unlikely adventures)",
-    "noir":        "a hard-boiled film-noir vignette, all shadows, betrayal and cigarette smoke",
-    "epic":        "a grandiose, mock-heroic legend in the breathless voice of an ancient epic",
-    "haiku":       "exactly two lines of vivid, evocative imagery (haiku-like, no need to count syllables)",
-    "limerick":    "a single cheeky limerick (five lines, AABBA rhyme) — you may exceed two sentences for this one",
-    "conspiracy":  "a paranoid conspiracy theory connecting it to secret societies and cover-ups, delivered deadpan",
+    "whimsical":    "a joyfully absurd, tongue-in-cheek tall tale (secret purposes, imagined former owners, unlikely adventures)",
+    "noir":         "a hard-boiled film-noir vignette, all shadows, betrayal and cigarette smoke",
+    "epic":         "a grandiose, mock-heroic legend in the breathless voice of an ancient epic",
+    "haiku":        "exactly two lines of vivid, evocative imagery (haiku-like, no need to count syllables)",
+    "limerick":     "a single cheeky limerick (five lines, AABBA rhyme) — you may exceed two sentences for this one",
+    "conspiracy":   "a paranoid conspiracy theory connecting it to secret societies and cover-ups, delivered deadpan",
+    "pirate":       "a swashbuckling pirate's yarn — 'arr', grog, cursed doubloons and buried treasure",
+    "shakespeare":  "a dramatic mock-Shakespearean soliloquy, all thee, thou, forsooth and anguished asides",
+    "corporate":    "soulless corporate-speak — synergy, deliverables, circling back, leveraging learnings",
+    "genz":         "chaotic Gen-Z internet slang — no cap, unserious, it's giving, lowkey iconic, core",
+    "attenborough": "a hushed David-Attenborough nature-documentary narration, observing it like rare wildlife",
+    "roast":        "a savage but affectionate roast of the piece, like a snobby critic who's had quite enough",
+    "compliment":   "a lavish, over-the-top compliment aimed at YOU, the viewer, inspired by the piece",
+    "firstperson":  "narrated in first person BY the main subject of the artwork, describing their day",
+    "trailer":      "a booming movie-trailer voiceover — 'In a world…', dramatic pauses, high stakes",
+    "gossip":       "breathless tabloid gossip about the artwork and everyone supposedly in it",
+    "dadjoke":      "groan-worthy dad jokes and puns inspired by the artwork's subject",
+    "fairytale":    "the opening of a storybook fairy tale — 'Once upon a time…' — cosy and enchanted",
 }
 
 def ai_blurb(meta, tone="whimsical"):
@@ -486,18 +527,18 @@ def all_object_ids():
         pass
     return ids
 
-def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north"):
+def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", subject="", holidays=False):
     os.makedirs(TMP, exist_ok=True)
     LAST_PIECES.clear()
     avoid = avoid or set()
+    bias = bias_terms(subject, holidays, seasonal, hemisphere)
     # Gather candidate object IDs, then pull each object's record and download its
     # public-domain image until we have enough.
-    if seasonal and not query:
-        kws = seasonal_terms(hemisphere)
-        print(f"  seasonal: {'/'.join(kws)}")
+    if bias and not query:
+        print(f"  bias: {'/'.join(bias)}")
         require_artists = None
         oids = []
-        for kw in kws:
+        for kw in bias:
             hits = met_json(MET_SEARCH, params={"q": kw, "hasImages": "true"}).get("objectIDs") or []
             random.shuffle(hits); oids.extend(hits[:60])
         random.shuffle(oids)
@@ -586,15 +627,16 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
 CLE_API = "https://openaccess-api.clevelandart.org/api/artworks/"
 CLE_NAME = "Cleveland Museum of Art"
 
-def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", all_types=True):
+def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", all_types=True, subject="", holidays=False):
     """Second source: Cleveland Museum of Art open access (keyless, CC0). Its API carries
     a real 'description', so 'real' captions need no scraping."""
     os.makedirs(TMP, exist_ok=True); LAST_PIECES.clear()
     avoid = avoid or set()
     params = {"has_image": "1", "cc0": "1", "limit": "100", "indent": "1"}
     q = query
-    if not q and seasonal:
-        q = random.choice(seasonal_terms(hemisphere))
+    _bias = bias_terms(subject, holidays, seasonal, hemisphere)
+    if not q and _bias:
+        q = random.choice(_bias)
     elif not q and theme == "cycle":
         q = random.choice(THEMES[THEME_CYCLE[datetime.date.today().toordinal() % len(THEME_CYCLE)]])
     elif not q and theme in THEMES and theme != "mix":
@@ -689,9 +731,10 @@ def _gather(args, mat_rgb, count):
     if src == "cleveland":
         return fetch_cleveland(count, args.query, mat_rgb, args.theme, args.placard,
                                args.describe, args.types, args.qr, args.tone, avoid,
-                               args.seasonal, args.hemisphere, args.all_types)
+                               args.seasonal, args.hemisphere, args.all_types, args.subject, args.holidays)
     return fetch_matted(count, args.query, mat_rgb, args.theme, args.placard, args.all_types,
-                        args.describe, args.types, args.qr, args.tone, avoid, args.seasonal, args.hemisphere)
+                        args.describe, args.types, args.qr, args.tone, avoid, args.seasonal,
+                        args.hemisphere, args.subject, args.holidays)
 
 def run(args):
     mat_rgb = MAT_COLORS[args.mat]
@@ -834,6 +877,10 @@ def main():
                     help="bias art to the current season")
     ap.add_argument("--hemisphere", choices=["north", "south"], default=cfg.get("hemisphere", "north"),
                     help="which hemisphere's seasons to use")
+    ap.add_argument("--subject", default=cfg.get("subject", ""),
+                    help="only show art of this subject, e.g. 'cats' (overrides content/season)")
+    ap.add_argument("--holidays", action=argparse.BooleanOptionalAction, default=cfg.get("holidays", False),
+                    help="theme the art around nearby holidays (Halloween, Christmas…)")
     ap.add_argument("--preview", default=None, metavar="PATH",
                     help="render one image to PATH and exit — does not touch the TV")
     ap.add_argument("--force", action="store_true", help="change the art even if pinned")

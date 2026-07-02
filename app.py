@@ -92,7 +92,10 @@ def flags_from(cfg):
     f += ["--qr"] if cfg.get("qr", True) else ["--no-qr"]
     f += ["--replace"] if cfg.get("replace", True) else ["--no-replace"]
     f += ["--seasonal"] if cfg.get("seasonal") else ["--no-seasonal"]
+    f += ["--holidays"] if cfg.get("holidays") else ["--no-holidays"]
     f += ["--hemisphere", cfg.get("hemisphere", "north")]
+    if (cfg.get("subject") or "").strip():
+        f += ["--subject", cfg["subject"].strip()]
     f += ["--fetch", str(cfg.get("fetch", 1))]
     if cfg.get("mac"):
         f += ["--mac", cfg["mac"]]
@@ -310,8 +313,12 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    <option value="cleveland">Cleveland Museum of Art</option>
    <option value="any">Either — a random pick each time</option>
  </select>
+ <label class="f" style="margin-top:16px">Only show art of… <span class="sub">— optional, e.g. cats, dogs, dragons (overrides the above)</span></label>
+ <input type="text" id="subject" placeholder="anything you like — leave blank for none" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px">
  <label class="chk" style="margin-top:14px"><input type="checkbox" id="seasonal">
-   <span>Match the season <span class="sub">— bias to snow, blossom, harvest… (overrides the above)</span></span></label>
+   <span>Match the season <span class="sub">— bias to snow, blossom, harvest…</span></span></label>
+ <label class="chk" style="margin-top:14px"><input type="checkbox" id="holidays">
+   <span>Celebrate holidays <span class="sub">— spooky art at Halloween, nativity at Christmas…</span></span></label>
  <label class="chk" style="margin-top:14px"><input type="checkbox" id="all_types">
    <span>All object types <span class="sub">— everything the museum has</span></span></label>
  <div id="typegrid" class="typegrid">
@@ -369,7 +376,8 @@ const cfg = {{ cfg|tojson }};
 const $ = id => document.getElementById(id);
 const el = {content:$('content'), source:$('source'), all_types:$('all_types'), typegrid:$('typegrid'),
   placard:$('placard'), captionopts:$('captionopts'), qr:$('qr'), tonerow:$('tonerow'),
-  seasonal:$('seasonal'), hemisphere:$('hemisphere'), ntfy_topic:$('ntfy_topic'), password:$('password'),
+  seasonal:$('seasonal'), holidays:$('holidays'), subject:$('subject'), hemisphere:$('hemisphere'),
+  ntfy_topic:$('ntfy_topic'), password:$('password'),
   frequency:$('frequency'), time:$('time'), mat:$('mat'), mac:$('mac'), status:$('status'), pv:$('pv'),
   save:$('save'), prev:$('prev'), now:$('now'), historylist:$('historylist'),
   cur:$('cur'), laststatus:$('laststatus'), nowtitle:$('nowtitle'), nowmeta:$('nowmeta'), pin:$('pin'), ban:$('ban')};
@@ -386,6 +394,7 @@ el.content.value=cfg.content; el.all_types.checked=!!cfg.all_types; el.frequency
 el.time.value=cfg.time; el.mat.value=cfg.mat; el.mac.value=cfg.mac||''; el.qr.checked=cfg.qr!==false;
 el.source.value=cfg.source||'met'; el.ntfy_topic.value=cfg.ntfy_topic||'';
 el.seasonal.checked=!!cfg.seasonal; el.hemisphere.value=cfg.hemisphere||'north';
+el.holidays.checked=!!cfg.holidays; el.subject.value=cfg.subject||'';
 el.placard.checked=cfg.placard!==false;
 const tset=new Set(Array.isArray(cfg.tone)?cfg.tone:[cfg.tone||'whimsical']);
 document.querySelectorAll('.tonecheck').forEach(c=>c.checked=tset.has(c.dataset.tone));
@@ -398,8 +407,8 @@ function collect(){return {description:document.querySelector('#description butt
   types:[...document.querySelectorAll('.tcheck')].filter(c=>c.checked).map(c=>c.dataset.type),
   qr:el.qr.checked, placard:el.placard.checked,
   tone:[...document.querySelectorAll('.tonecheck')].filter(c=>c.checked).map(c=>c.dataset.tone),
-  seasonal:el.seasonal.checked, hemisphere:el.hemisphere.value,
-  ntfy_topic:el.ntfy_topic.value.trim(), password:el.password.value,
+  seasonal:el.seasonal.checked, holidays:el.holidays.checked, subject:el.subject.value.trim(),
+  hemisphere:el.hemisphere.value, ntfy_topic:el.ntfy_topic.value.trim(), password:el.password.value,
   frequency:el.frequency.value, time:el.time.value, mat:el.mat.value,
   mac:el.mac.value.trim(), replace:true};}
 async function post(url,btn,label){el.status.textContent=label+'…';

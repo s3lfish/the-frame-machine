@@ -46,8 +46,13 @@ to the genuine museum page.
   art changes and when — with **Preview** and **Change now** buttons. No config-file editing.
 - **Two museums.** The Met *and* the Cleveland Museum of Art (both keyless, CC0) — pick one or
   let it choose either at random. Resilient if one source ever changes.
-- **Caption voices.** Made-up tales in your choice of tone: whimsical, noir, epic, haiku,
-  limerick or conspiracy.
+- **Caption voices.** Made-up tales in ~18 tones — whimsical, noir, epic, haiku, limerick,
+  conspiracy, pirate, Shakespearean, corporate, Gen-Z, Attenborough, roast, compliment,
+  first-person, movie-trailer, tabloid gossip, dad-jokes, fairytale. Tick several; one is
+  picked at random each time.
+- **Subject & holiday modes.** Ask for "only show art of cats" (or dogs, dragons, anything),
+  or let it get festive — spooky art near Halloween, nativities at Christmas, hearts for
+  Valentine's.
 - **Mission-control dashboard.** See what's on the TV now, when it last changed, and whether the
   last run worked — plus **Pin** (hold a piece), **Ban** (never show it again) and no-repeats.
 - **Seasonal mode.** Optionally bias the art to the season (hemisphere-aware).
