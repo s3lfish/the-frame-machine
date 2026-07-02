@@ -44,6 +44,14 @@ to the genuine museum page.
   touches art you added yourself.
 - **Web control panel.** A phone-friendly page to pick the content, caption style, how often the
   art changes and when — with **Preview** and **Change now** buttons. No config-file editing.
+- **Two museums.** The Met *and* the Cleveland Museum of Art (both keyless, CC0) — pick one or
+  let it choose either at random. Resilient if one source ever changes.
+- **Caption voices.** Made-up tales in your choice of tone: whimsical, noir, epic, haiku,
+  limerick or conspiracy.
+- **Mission-control dashboard.** See what's on the TV now, when it last changed, and whether the
+  last run worked — plus **Pin** (hold a piece), **Ban** (never show it again) and no-repeats.
+- **Seasonal mode.** Optionally bias the art to the season (hemisphere-aware).
+- **Phone alerts.** Get an [ntfy](https://ntfy.sh) push if a run ever fails. Optional panel password.
 
 ## Requirements
 
@@ -122,10 +130,24 @@ toggle**, **mat colour**, and **how often / when** the art changes — plus **Pr
 `~/.config/frame/config.json` (which `frame_push.py` reads for its defaults) and, on macOS,
 creates and reloads the daily launchd schedule for you from the frequency/time you pick.
 
+When you set the frequency/time, the panel builds the recurring job for you — a **launchd**
+agent on macOS, or a **cron** entry on Linux.
+
 To keep the panel always running, install it as a service with the template
 `com.example.frameart-gui.plist` (fill the `__PLACEHOLDERS__`, then bootstrap it — same steps as
 below). macOS may ask once to "allow incoming connections" for Python — approve it so other
 devices can reach the page.
+
+### Docker (Linux / Raspberry Pi)
+
+```bash
+FRAME_MAC=AA:BB:CC:DD:EE:FF docker compose up -d   # then open http://<host>:8080
+```
+
+Host networking is used so the container can discover and wake the TV (works on Linux/Pi; not
+on Docker Desktop for Mac). Your `~/.config/frame` is mounted in, so the pairing token, settings
+and history persist. For scheduled changes, either set the schedule in the panel (writes cron
+inside the container) or run `docker exec` from the host's crontab.
 
 ### config.json
 

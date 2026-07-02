@@ -89,31 +89,31 @@ def flags_from(cfg):
     f += ["--placard"] if cfg.get("placard", True) else ["--no-placard"]
     f += ["--qr"] if cfg.get("qr", True) else ["--no-qr"]
     f += ["--replace"] if cfg.get("replace", True) else ["--no-replace"]
+    f += ["--seasonal"] if cfg.get("seasonal") else ["--no-seasonal"]
+    f += ["--hemisphere", cfg.get("hemisphere", "north")]
     f += ["--fetch", str(cfg.get("fetch", 1))]
     if cfg.get("mac"):
         f += ["--mac", cfg["mac"]]
     return f
 
-# ---------- schedule (macOS launchd) ----------
+# ---------- schedule (macOS launchd / Linux cron) ----------
 # frequency -> the hour offsets (from the anchor time) at which to fire each day
 FREQ_OFFSETS = {"daily": [0], "twice-daily": [0, 12], "every-8h": [0, 8, 16], "every-6h": [0, 6, 12, 18]}
 
-def _calendar_intervals(hh, mm, freq):
-    return [{"Hour": (hh + off) % 24, "Minute": mm} for off in FREQ_OFFSETS.get(freq, [0])]
-
 def write_schedule(cfg):
-    """Regenerate + reload the launchd job from frequency/time. macOS only."""
-    if platform.system() != "Darwin":
-        return "Settings saved. (Auto-scheduling is macOS-only — set a cron job on this OS; see README.)"
+    """Regenerate + reload the recurring job from frequency/time (launchd on macOS, cron on Linux)."""
     try:
         hh, mm = map(int, cfg.get("time", "07:30").split(":"))
     except Exception:
         hh, mm = 7, 30
-    intervals = _calendar_intervals(hh, mm, cfg.get("frequency", "daily"))
-    ivals = "".join(
-        "<dict>" + "".join(f"<key>{k}</key><integer>{v}</integer>" for k, v in iv.items()) + "</dict>"
-        for iv in intervals)
-    plist = f"""<?xml version="1.0" encoding="UTF-8"?>
+    offs = FREQ_OFFSETS.get(cfg.get("frequency", "daily"), [0])
+    when = ", ".join(f"{(hh + o) % 24:02d}:{mm:02d}" for o in offs)
+    sysname = platform.system()
+
+    if sysname == "Darwin":
+        ivals = "".join("<dict><key>Hour</key><integer>%d</integer><key>Minute</key><integer>%d</integer></dict>"
+                        % ((hh + o) % 24, mm) for o in offs)
+        plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>{LABEL}</string>
@@ -125,16 +125,28 @@ def write_schedule(cfg):
   <key>RunAtLoad</key><false/>
 </dict></plist>
 """
-    os.makedirs(os.path.dirname(PLIST), exist_ok=True)
-    with open(PLIST, "w") as f:
-        f.write(plist)
-    uid = os.getuid()
-    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LABEL}"], capture_output=True)
-    r = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", PLIST], capture_output=True, text=True)
-    when = ", ".join(f"{iv['Hour']:02d}:{iv['Minute']:02d}" for iv in intervals)
-    if r.returncode != 0:
-        return f"Settings saved, but scheduling failed: {r.stderr.strip()[:160]}"
-    return f"Saved. The art will change daily at {when}."
+        os.makedirs(os.path.dirname(PLIST), exist_ok=True)
+        open(PLIST, "w").write(plist)
+        uid = os.getuid()
+        subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LABEL}"], capture_output=True)
+        r = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", PLIST], capture_output=True, text=True)
+        return f"Saved. The art will change at {when}." if r.returncode == 0 \
+            else f"Settings saved, but scheduling failed: {r.stderr.strip()[:160]}"
+
+    if sysname == "Linux":
+        tag = "# frameart"
+        lines = [f"{mm} {(hh + o) % 24} * * * {PYTHON} {SCRIPT} >> {LOG} 2>&1  {tag}" for o in offs]
+        try:
+            existing = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout.splitlines()
+        except Exception:
+            existing = []
+        kept = [l for l in existing if tag not in l and l.strip()]
+        cron = "\n".join(kept + lines) + "\n"
+        r = subprocess.run(["crontab", "-"], input=cron, text=True, capture_output=True)
+        return f"Saved. Cron will change the art at {when}." if r.returncode == 0 \
+            else f"Settings saved, but cron update failed: {r.stderr.strip()[:160]}"
+
+    return "Settings saved. (Automatic scheduling isn't supported on this OS — run frame_push.py on a timer yourself.)"
 
 # ---------- routes ----------
 @app.route("/")
@@ -290,6 +302,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    <option value="cleveland">Cleveland Museum of Art</option>
    <option value="any">Either — a random pick each time</option>
  </select>
+ <label class="chk" style="margin-top:14px"><input type="checkbox" id="seasonal">
+   <span>Match the season <span class="sub">— bias to snow, blossom, harvest… (overrides the above)</span></span></label>
  <label class="chk" style="margin-top:14px"><input type="checkbox" id="all_types">
    <span>All object types <span class="sub">— everything the museum has</span></span></label>
  <div id="typegrid" class="typegrid">
@@ -330,6 +344,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  <label class="f" style="margin-top:16px">Phone alerts — ntfy topic</label>
  <input type="text" id="ntfy_topic" placeholder="e.g. my-frame-alerts-8b3" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px">
  <p class="sub" style="margin-top:8px">Pick any hard-to-guess word, then subscribe to it in the free <b>ntfy</b> app to get a push if a run ever fails. Leave blank for none.</p>
+ <label class="f" style="margin-top:16px">Hemisphere <span class="sub">— for “Match the season”</span></label>
+ <select id="hemisphere"><option value="north">Northern</option><option value="south">Southern</option></select>
  <label class="f" style="margin-top:16px">Panel password</label>
  <input type="password" id="password" placeholder="leave blank to keep current" autocomplete="new-password" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px">
  <p class="sub" style="margin-top:8px">Requires a login to open this panel. Blank leaves it unchanged; to remove it, clear it in config.json.</p>
@@ -340,7 +356,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 const cfg = {{ cfg|tojson }};
 const $ = id => document.getElementById(id);
 const el = {content:$('content'), source:$('source'), all_types:$('all_types'), typegrid:$('typegrid'),
-  qr:$('qr'), tone:$('tone'), tonerow:$('tonerow'), ntfy_topic:$('ntfy_topic'), password:$('password'),
+  qr:$('qr'), tone:$('tone'), tonerow:$('tonerow'), seasonal:$('seasonal'), hemisphere:$('hemisphere'),
+  ntfy_topic:$('ntfy_topic'), password:$('password'),
   frequency:$('frequency'), time:$('time'), mat:$('mat'), mac:$('mac'), status:$('status'), pv:$('pv'),
   save:$('save'), prev:$('prev'), now:$('now'),
   cur:$('cur'), laststatus:$('laststatus'), nowtitle:$('nowtitle'), nowmeta:$('nowmeta'), pin:$('pin'), ban:$('ban')};
@@ -354,14 +371,16 @@ setSeg(cfg.description);
 el.content.value=cfg.content; el.all_types.checked=!!cfg.all_types; el.frequency.value=cfg.frequency;
 el.time.value=cfg.time; el.mat.value=cfg.mat; el.mac.value=cfg.mac||''; el.qr.checked=cfg.qr!==false;
 el.source.value=cfg.source||'met'; el.tone.value=cfg.tone||'whimsical'; el.ntfy_topic.value=cfg.ntfy_topic||'';
+el.seasonal.checked=!!cfg.seasonal; el.hemisphere.value=cfg.hemisphere||'north';
 const chosen=new Set(cfg.types||[]);
 document.querySelectorAll('.tcheck').forEach(c=>c.checked=chosen.has(c.dataset.type));
 syncTypes();
 function collect(){return {description:document.querySelector('#description button.on').dataset.v,
   content:el.content.value, source:el.source.value, all_types:el.all_types.checked,
   types:[...document.querySelectorAll('.tcheck')].filter(c=>c.checked).map(c=>c.dataset.type),
-  qr:el.qr.checked, tone:el.tone.value, ntfy_topic:el.ntfy_topic.value.trim(),
-  password:el.password.value, frequency:el.frequency.value, time:el.time.value, mat:el.mat.value,
+  qr:el.qr.checked, tone:el.tone.value, seasonal:el.seasonal.checked, hemisphere:el.hemisphere.value,
+  ntfy_topic:el.ntfy_topic.value.trim(), password:el.password.value,
+  frequency:el.frequency.value, time:el.time.value, mat:el.mat.value,
   mac:el.mac.value.trim(), placard:true, replace:true};}
 async function post(url,btn,label){el.status.textContent=label+'…';
   const old=btn.textContent; btn.disabled=true;

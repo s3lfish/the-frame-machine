@@ -86,6 +86,17 @@ THEMES = {
     "mix":           TERM_POOL,
 }
 THEME_CYCLE = ["impressionist", "ukiyo-e", "old-masters", "landscape"]
+# Seasonal search bias (hemisphere-aware) — picked when --seasonal is on.
+SEASON_TERMS = {"winter": ["snow", "winter", "ice", "frost"],
+                "spring": ["blossom", "spring", "flowers", "cherry blossom"],
+                "summer": ["summer", "sea", "beach", "garden"],
+                "autumn": ["autumn", "harvest", "leaves", "moon"]}
+def seasonal_terms(hemisphere="north"):
+    m = datetime.date.today().month
+    if hemisphere == "south":
+        m = (m + 5) % 12 + 1
+    season = ("winter", "spring", "summer", "autumn")[((m % 12) // 3)]
+    return SEASON_TERMS[season]
 TMP = "/tmp/frame_art"
 # Your Frame's wireless MAC — set it here or via the FRAME_MAC env var / --mac.
 # Find it on the TV: Settings > General/Support > About This TV (or your router).
@@ -101,7 +112,7 @@ DEFAULTS = {"mac": "", "ip": None, "description": "made-up", "content": "museum"
             "all_types": True, "types": [], "placard": True, "qr": True, "mat": "charcoal",
             "fetch": 1, "replace": True, "frequency": "daily", "time": "07:30",
             "ntfy_topic": "", "tone": "whimsical", "source": "met", "orientation": "landscape",
-            "pinned": False}
+            "pinned": False, "seasonal": False, "hemisphere": "north"}
 STATUS = os.path.join(CFG, "status.json")   # last-run outcome, for alerts + the dashboard
 HISTORY = os.path.join(CFG, "history.json") # recently displayed pieces (for no-repeats + dashboard)
 BLOCKLIST = os.path.join(CFG, "blocklist.json")  # ids the user has banned
@@ -264,9 +275,26 @@ def mat_image(art, mat_rgb):
     return canvas
 
 # ---------- museum-placard layout (artwork + caption panel) ----------
-FONT_DIR = "/System/Library/Fonts/Supplemental"
+# Serif fonts by style, with cross-platform fallbacks (macOS Georgia, else common
+# Linux serifs) so the placard renders in Docker / on a Pi too.
+_MAC = "/System/Library/Fonts/Supplemental"
+_LIN = "/usr/share/fonts/truetype"
+_FONT_CANDIDATES = {
+    "Georgia.ttf":             [f"{_MAC}/Georgia.ttf", f"{_LIN}/liberation/LiberationSerif-Regular.ttf", f"{_LIN}/dejavu/DejaVuSerif.ttf"],
+    "Georgia Bold.ttf":        [f"{_MAC}/Georgia Bold.ttf", f"{_LIN}/liberation/LiberationSerif-Bold.ttf", f"{_LIN}/dejavu/DejaVuSerif-Bold.ttf"],
+    "Georgia Italic.ttf":      [f"{_MAC}/Georgia Italic.ttf", f"{_LIN}/liberation/LiberationSerif-Italic.ttf", f"{_LIN}/dejavu/DejaVuSerif-Italic.ttf"],
+    "Georgia Bold Italic.ttf": [f"{_MAC}/Georgia Bold Italic.ttf", f"{_LIN}/liberation/LiberationSerif-BoldItalic.ttf", f"{_LIN}/dejavu/DejaVuSerif-BoldItalic.ttf"],
+}
+_font_cache = {}
 def _font(name, size):
-    return ImageFont.truetype(os.path.join(FONT_DIR, name), size)
+    key = (name, size)
+    if key not in _font_cache:
+        f = None
+        for path in _FONT_CANDIDATES.get(name, [f"{_MAC}/{name}"]):
+            if os.path.exists(path):
+                f = ImageFont.truetype(path, size); break
+        _font_cache[key] = f or ImageFont.load_default()
+    return _font_cache[key]
 
 def _wrap(draw, text, font, max_w):
     lines, cur = [], ""
@@ -452,13 +480,22 @@ def all_object_ids():
         pass
     return ids
 
-def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None):
+def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north"):
     os.makedirs(TMP, exist_ok=True)
     LAST_PIECES.clear()
     avoid = avoid or set()
     # Gather candidate object IDs, then pull each object's record and download its
     # public-domain image until we have enough.
-    if theme == "museum" and types and not all_types:
+    if seasonal and not query:
+        kws = seasonal_terms(hemisphere)
+        print(f"  seasonal: {'/'.join(kws)}")
+        require_artists = None
+        oids = []
+        for kw in kws:
+            hits = met_json(MET_SEARCH, params={"q": kw, "hasImages": "true"}).get("objectIDs") or []
+            random.shuffle(hits); oids.extend(hits[:60])
+        random.shuffle(oids)
+    elif theme == "museum" and types and not all_types:
         # Targeted: search the collection for the chosen type families (dense pool,
         # far fewer fetches than random-sampling 500k ids). The per-object
         # classification check below still confirms each hit really is that type.
@@ -543,14 +580,16 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
 CLE_API = "https://openaccess-api.clevelandart.org/api/artworks/"
 CLE_NAME = "Cleveland Museum of Art"
 
-def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None):
+def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north"):
     """Second source: Cleveland Museum of Art open access (keyless, CC0). Its API carries
     a real 'description', so 'real' captions need no scraping."""
     os.makedirs(TMP, exist_ok=True); LAST_PIECES.clear()
     avoid = avoid or set()
     params = {"has_image": "1", "cc0": "1", "limit": "100", "indent": "1"}
     q = query
-    if not q and theme == "cycle":
+    if not q and seasonal:
+        q = random.choice(seasonal_terms(hemisphere))
+    elif not q and theme == "cycle":
         q = random.choice(THEMES[THEME_CYCLE[datetime.date.today().toordinal() % len(THEME_CYCLE)]])
     elif not q and theme in THEMES and theme != "mix":
         q = random.choice(THEMES[theme])
@@ -641,9 +680,9 @@ def _gather(args, mat_rgb, count):
         src = random.choice(["met", "cleveland"])
     if src == "cleveland":
         return fetch_cleveland(count, args.query, mat_rgb, args.theme, args.placard,
-                               args.describe, args.types, args.qr, args.tone, avoid)
+                               args.describe, args.types, args.qr, args.tone, avoid, args.seasonal, args.hemisphere)
     return fetch_matted(count, args.query, mat_rgb, args.theme, args.placard, args.all_types,
-                        args.describe, args.types, args.qr, args.tone, avoid)
+                        args.describe, args.types, args.qr, args.tone, avoid, args.seasonal, args.hemisphere)
 
 def run(args):
     mat_rgb = MAT_COLORS[args.mat]
@@ -780,6 +819,10 @@ def main():
                     help="art source: the Met, the Cleveland Museum, or a random pick each run")
     ap.add_argument("--tone", choices=list(TONES), default=cfg.get("tone", "whimsical"),
                     help="voice for made-up captions")
+    ap.add_argument("--seasonal", action=argparse.BooleanOptionalAction, default=cfg.get("seasonal", False),
+                    help="bias art to the current season")
+    ap.add_argument("--hemisphere", choices=["north", "south"], default=cfg.get("hemisphere", "north"),
+                    help="which hemisphere's seasons to use")
     ap.add_argument("--preview", default=None, metavar="PATH",
                     help="render one image to PATH and exit — does not touch the TV")
     ap.add_argument("--force", action="store_true", help="change the art even if pinned")

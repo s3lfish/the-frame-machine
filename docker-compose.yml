@@ -1,0 +1,14 @@
+# Runs the control panel. Best on a Linux box / Raspberry Pi, where host networking
+# lets the container discover and Wake-on-LAN the TV.
+#   FRAME_MAC=AA:BB:CC:DD:EE:FF docker compose up -d
+# then open http://<this-host>:8080
+services:
+  frame-machine:
+    build: .
+    network_mode: host          # required for TV discovery + Wake-on-LAN
+    environment:
+      - FRAME_MAC=${FRAME_MAC:-}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ${HOME}/.config/frame:/root/.config/frame   # persists token, config, key, history
+    restart: unless-stopped
