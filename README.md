@@ -57,27 +57,35 @@ to the genuine museum page.
 
 - A Samsung **The Frame** TV on your LAN (tested on a 2022 LS03B / firmware 1720; the art
   WebSocket on port 8002 must be reachable — it is on many 2020–2023 models).
-- An always-on computer on the same network (macOS or Linux). Python 3.10+.
-- `pip install -r requirements.txt`
+- An always-on computer on the same network (macOS or Linux) with **Python 3.10+**.
 
-## Setup
+## Install (the easy way)
 
 ```bash
 git clone https://github.com/s3lfish/the-frame-machine
 cd the-frame-machine
-pip install -r requirements.txt
+./install.sh
 ```
 
-1. **Find your TV's wireless MAC** — on the TV: *Settings → General/Support → About This TV*,
-   or from your router. Set it via `--mac AA:BB:CC:DD:EE:FF` or `export FRAME_MAC=...`.
-2. **First run pairs with the TV.** With the TV awake, run a small test. The TV shows an
-   "Allow" prompt the first time — accept it. The pairing token is saved to
-   `~/.config/frame/token.txt` (tied to the TV, not the IP).
+The script installs everything, asks for your TV's MAC address (it tells you where to find it),
+and starts the control panel as a background service. When it finishes it prints a link — open
+it on your phone or laptop, click **Change the art now** (accept the one-time "Allow" prompt on
+the TV), pick how often it should change, and hit **Save**. Done.
+
+> On **Linux/Raspberry Pi** you can instead use Docker — see [Docker](#docker-linux--raspberry-pi) below.
+
+<details>
+<summary>Manual setup (if you'd rather not run the script)</summary>
 
 ```bash
-export FRAME_MAC=AA:BB:CC:DD:EE:FF
-python3 frame_push.py --fetch 1 --mat charcoal --placard --replace
+pip install -r requirements.txt
+export FRAME_MAC=AA:BB:CC:DD:EE:FF          # your TV's wireless MAC (About This TV, or your router)
+python3 app.py --port 8080                  # the control panel, then open http://localhost:8080
+# or drive it from the command line directly:
+python3 frame_push.py --fetch 1 --placard --replace   # first run shows an "Allow" prompt on the TV
 ```
+The pairing token is saved to `~/.config/frame/token.txt` (tied to the TV, not the IP).
+</details>
 
 ## Usage
 

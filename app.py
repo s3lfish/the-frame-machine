@@ -79,7 +79,9 @@ def save_config(updates):
 def flags_from(cfg):
     """Turn a settings dict into frame_push.py CLI flags (so preview/now match the page)."""
     f = ["--theme", cfg["content"], "--mat", cfg["mat"], "--describe", cfg["description"],
-         "--source", cfg.get("source", "met"), "--tone", cfg.get("tone", "whimsical")]
+         "--source", cfg.get("source", "met")]
+    tones = cfg.get("tone") or ["whimsical"]
+    f += ["--tone", ",".join(tones if isinstance(tones, list) else [tones])]
     if cfg.get("all_types"):
         f += ["--all-types"]
     else:
@@ -274,15 +276,22 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 
 <div class="card">
  <label class="f">Caption <span class="sub">— the story under each piece</span></label>
- <div class="seg" id="description">
-   <button data-v="off">None</button>
-   <button data-v="real">Real Met caption</button>
-   <button data-v="made-up">Made-up tale</button>
+ <label class="chk"><input type="checkbox" id="placard">
+   <span>Museum label <span class="sub">— artist, title &amp; details beside the art (off = just the artwork, no captions)</span></span></label>
+ <div id="captionopts">
+   <label class="f" style="margin-top:16px">Caption <span class="sub">— the story under each piece</span></label>
+   <div class="seg" id="description">
+     <button data-v="off">None</button>
+     <button data-v="real">Real caption</button>
+     <button data-v="made-up">Made-up tale</button>
+   </div>
+   <div id="tonerow" style="margin-top:14px"><label class="f">Made-up voice(s) <span class="sub">— one is picked at random each time</span></label>
+     <div class="typegrid" id="tonegrid" style="border-top:none;padding-top:4px">
+       {% for t in tones %}<label class="chk tk"><input type="checkbox" class="tonecheck" data-tone="{{t}}"><span>{{t|capitalize}}</span></label>{% endfor %}
+     </div></div>
+   <label class="chk" style="margin-top:14px"><input type="checkbox" id="qr">
+     <span>Show a QR code <span class="sub">— links to the real museum page for this piece</span></span></label>
  </div>
- <div id="tonerow" style="margin-top:14px"><label class="f">Made-up voice</label>
-   <select id="tone">{% for t in tones %}<option value="{{t}}">{{t|capitalize}}</option>{% endfor %}</select></div>
- <label class="chk" style="margin-top:14px"><input type="checkbox" id="qr">
-   <span>Show a QR code <span class="sub">— links to the real museum page for this piece</span></span></label>
 </div>
 
 <div class="card">
@@ -337,6 +346,10 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <div id="status"></div>
 <img id="pv">
 
+<div class="card"><details><summary>Recent history</summary>
+ <div id="historylist" class="sub" style="margin-top:10px">Loading…</div>
+</details></div>
+
 <div class="card" style="margin-top:16px"><details><summary>Advanced</summary>
  <label class="f" style="margin-top:12px">TV wireless MAC address</label>
  <input type="text" id="mac" placeholder="AA:BB:CC:DD:EE:FF" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px">
@@ -356,32 +369,40 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 const cfg = {{ cfg|tojson }};
 const $ = id => document.getElementById(id);
 const el = {content:$('content'), source:$('source'), all_types:$('all_types'), typegrid:$('typegrid'),
-  qr:$('qr'), tone:$('tone'), tonerow:$('tonerow'), seasonal:$('seasonal'), hemisphere:$('hemisphere'),
-  ntfy_topic:$('ntfy_topic'), password:$('password'),
+  placard:$('placard'), captionopts:$('captionopts'), qr:$('qr'), tonerow:$('tonerow'),
+  seasonal:$('seasonal'), hemisphere:$('hemisphere'), ntfy_topic:$('ntfy_topic'), password:$('password'),
   frequency:$('frequency'), time:$('time'), mat:$('mat'), mac:$('mac'), status:$('status'), pv:$('pv'),
-  save:$('save'), prev:$('prev'), now:$('now'),
+  save:$('save'), prev:$('prev'), now:$('now'), historylist:$('historylist'),
   cur:$('cur'), laststatus:$('laststatus'), nowtitle:$('nowtitle'), nowmeta:$('nowmeta'), pin:$('pin'), ban:$('ban')};
 function setSeg(val){document.querySelectorAll('#description button').forEach(b=>b.classList.toggle('on',b.dataset.v===val));
   el.tonerow.style.display = (val==='made-up') ? 'block' : 'none';}
 document.querySelectorAll('#description button').forEach(b=>b.onclick=()=>setSeg(b.dataset.v));
+function syncPlacard(){el.captionopts.style.display = el.placard.checked ? 'block' : 'none';}
+el.placard.onchange=syncPlacard;
 function syncTypes(){el.typegrid.classList.toggle('hidden', el.all_types.checked);}
 el.all_types.onchange=syncTypes;
 // hydrate from config
 setSeg(cfg.description);
 el.content.value=cfg.content; el.all_types.checked=!!cfg.all_types; el.frequency.value=cfg.frequency;
 el.time.value=cfg.time; el.mat.value=cfg.mat; el.mac.value=cfg.mac||''; el.qr.checked=cfg.qr!==false;
-el.source.value=cfg.source||'met'; el.tone.value=cfg.tone||'whimsical'; el.ntfy_topic.value=cfg.ntfy_topic||'';
+el.source.value=cfg.source||'met'; el.ntfy_topic.value=cfg.ntfy_topic||'';
 el.seasonal.checked=!!cfg.seasonal; el.hemisphere.value=cfg.hemisphere||'north';
+el.placard.checked=cfg.placard!==false;
+const tset=new Set(Array.isArray(cfg.tone)?cfg.tone:[cfg.tone||'whimsical']);
+document.querySelectorAll('.tonecheck').forEach(c=>c.checked=tset.has(c.dataset.tone));
+syncPlacard();
 const chosen=new Set(cfg.types||[]);
 document.querySelectorAll('.tcheck').forEach(c=>c.checked=chosen.has(c.dataset.type));
 syncTypes();
 function collect(){return {description:document.querySelector('#description button.on').dataset.v,
   content:el.content.value, source:el.source.value, all_types:el.all_types.checked,
   types:[...document.querySelectorAll('.tcheck')].filter(c=>c.checked).map(c=>c.dataset.type),
-  qr:el.qr.checked, tone:el.tone.value, seasonal:el.seasonal.checked, hemisphere:el.hemisphere.value,
+  qr:el.qr.checked, placard:el.placard.checked,
+  tone:[...document.querySelectorAll('.tonecheck')].filter(c=>c.checked).map(c=>c.dataset.tone),
+  seasonal:el.seasonal.checked, hemisphere:el.hemisphere.value,
   ntfy_topic:el.ntfy_topic.value.trim(), password:el.password.value,
   frequency:el.frequency.value, time:el.time.value, mat:el.mat.value,
-  mac:el.mac.value.trim(), placard:true, replace:true};}
+  mac:el.mac.value.trim(), replace:true};}
 async function post(url,btn,label){el.status.textContent=label+'…';
   const old=btn.textContent; btn.disabled=true;
   try{const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(collect())});
@@ -397,6 +418,10 @@ async function loadState(){try{const j=await (await fetch('/state')).json(); con
   el.nowmeta.textContent=[s.source,s.when&&s.when.replace('T',' ')].filter(Boolean).join(' · ');
   if(j.has_image){el.cur.src='/current.jpg?t='+Date.now();el.cur.style.display='block';}
   el.pin.textContent=j.pinned?'Unpin':'Pin'; el.pin.classList.toggle('on',j.pinned);
+  el.historylist.innerHTML=(j.history&&j.history.length)? j.history.map(h=>{
+    const t=(h.url?`<a href="${h.url}" target="_blank" style="color:var(--ink)">${h.title||'?'}</a>`:(h.title||'?'));
+    return `<div style="padding:5px 0;border-bottom:1px solid var(--line)">${t} <span style="opacity:.6">— ${h.source||''} · ${(h.when||'').replace('T',' ')}</span></div>`;
+  }).join('') : 'Nothing yet.';
 }catch(e){}}
 el.pin.onclick=async()=>{const j=await (await fetch('/pin',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
 el.ban.onclick=async()=>{el.status.textContent='Banning & replacing…';const j=await (await fetch('/ban',{method:'POST'})).json();el.status.textContent=j.message;loadState();};

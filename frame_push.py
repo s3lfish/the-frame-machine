@@ -111,7 +111,7 @@ CONFIG = os.path.join(CFG, "config.json")   # written by the web GUI, read here 
 DEFAULTS = {"mac": "", "ip": None, "description": "made-up", "content": "museum",
             "all_types": True, "types": [], "placard": True, "qr": True, "mat": "charcoal",
             "fetch": 1, "replace": True, "frequency": "daily", "time": "07:30",
-            "ntfy_topic": "", "tone": "whimsical", "source": "met", "orientation": "landscape",
+            "ntfy_topic": "", "tone": ["whimsical"], "source": "met", "orientation": "landscape",
             "pinned": False, "seasonal": False, "hemisphere": "north"}
 STATUS = os.path.join(CFG, "status.json")   # last-run outcome, for alerts + the dashboard
 HISTORY = os.path.join(CFG, "history.json") # recently displayed pieces (for no-repeats + dashboard)
@@ -352,7 +352,9 @@ TONES = {
 
 def ai_blurb(meta, tone="whimsical"):
     """Fallback when there's no real prose: a deliberately fake, self-evidently invented
-    mini-tale from Claude in the chosen TONE. Dormant unless an Anthropic key is present."""
+    mini-tale from Claude. `tone` may be one tone or a list — a random one is picked."""
+    if isinstance(tone, (list, tuple)):
+        tone = random.choice(tone) if tone else "whimsical"
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         kf = os.path.join(CFG, "anthropic_key.txt")
@@ -633,13 +635,13 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
                 continue
             art = Image.open(io.BytesIO(r.content)).convert("RGB")
             desc = None
-            if describe == "real":
+            if placard and describe == "real":
                 desc = _truncate_prose(o["description"]) if o.get("description") else None
-            elif describe == "made-up":
+            elif placard and describe == "made-up":
                 desc = ai_blurb(meta, tone)
             if desc:
                 print(f"    + {describe}: {desc[:60]}...")
-            link = o.get("url") if (describe != "off" and qr) else None
+            link = o.get("url") if (placard and describe != "off" and qr) else None
             p = os.path.join(TMP, f"{len(paths)+1:02d}_{slug(meta['title'])}.jpg")
             (mat_with_placard(art, meta, mat_rgb, desc, link) if placard else mat_image(art, mat_rgb)).save(p, "JPEG", quality=JPEG_Q)
             paths.append(p)
@@ -817,8 +819,10 @@ def main():
                     help="show a QR code linking to the real museum page (when a caption is shown)")
     ap.add_argument("--source", choices=["met", "cleveland", "any"], default=cfg.get("source", "met"),
                     help="art source: the Met, the Cleveland Museum, or a random pick each run")
-    ap.add_argument("--tone", choices=list(TONES), default=cfg.get("tone", "whimsical"),
-                    help="voice for made-up captions")
+    _tone_default = cfg.get("tone") if isinstance(cfg.get("tone"), list) else [cfg.get("tone") or "whimsical"]
+    ap.add_argument("--tone", default=_tone_default,
+                    type=lambda s: [x.strip() for x in s.split(",") if x.strip() in TONES],
+                    help="voice(s) for made-up captions, comma-separated; one is picked at random")
     ap.add_argument("--seasonal", action=argparse.BooleanOptionalAction, default=cfg.get("seasonal", False),
                     help="bias art to the current season")
     ap.add_argument("--hemisphere", choices=["north", "south"], default=cfg.get("hemisphere", "north"),
