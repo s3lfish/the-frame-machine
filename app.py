@@ -45,6 +45,7 @@ def flags_from(cfg):
         if cfg.get("types"):
             f += ["--types", ",".join(cfg["types"])]
     f += ["--placard"] if cfg.get("placard", True) else ["--no-placard"]
+    f += ["--qr"] if cfg.get("qr", True) else ["--no-qr"]
     f += ["--replace"] if cfg.get("replace", True) else ["--no-replace"]
     f += ["--fetch", str(cfg.get("fetch", 1))]
     if cfg.get("mac"):
@@ -165,6 +166,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    <button data-v="real">Real Met caption</button>
    <button data-v="made-up">Made-up tale</button>
  </div>
+ <label class="chk" style="margin-top:14px"><input type="checkbox" id="qr">
+   <span>Show a QR code <span class="sub">— links to the real Met page for this piece</span></span></label>
 </div>
 
 <div class="card">
@@ -221,8 +224,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <script>
 const cfg = {{ cfg|tojson }};
 const $ = id => document.getElementById(id);
-const el = {content:$('content'), all_types:$('all_types'), typegrid:$('typegrid'), frequency:$('frequency'),
-  time:$('time'), mat:$('mat'), mac:$('mac'), status:$('status'), pv:$('pv'),
+const el = {content:$('content'), all_types:$('all_types'), typegrid:$('typegrid'), qr:$('qr'),
+  frequency:$('frequency'), time:$('time'), mat:$('mat'), mac:$('mac'), status:$('status'), pv:$('pv'),
   save:$('save'), prev:$('prev'), now:$('now')};
 function setSeg(val){document.querySelectorAll('#description button').forEach(b=>b.classList.toggle('on',b.dataset.v===val));}
 document.querySelectorAll('#description button').forEach(b=>b.onclick=()=>setSeg(b.dataset.v));
@@ -231,15 +234,15 @@ el.all_types.onchange=syncTypes;
 // hydrate from config
 setSeg(cfg.description);
 el.content.value=cfg.content; el.all_types.checked=!!cfg.all_types; el.frequency.value=cfg.frequency;
-el.time.value=cfg.time; el.mat.value=cfg.mat; el.mac.value=cfg.mac||'';
+el.time.value=cfg.time; el.mat.value=cfg.mat; el.mac.value=cfg.mac||''; el.qr.checked=cfg.qr!==false;
 const chosen=new Set(cfg.types||[]);
 document.querySelectorAll('.tcheck').forEach(c=>c.checked=chosen.has(c.dataset.type));
 syncTypes();
 function collect(){return {description:document.querySelector('#description button.on').dataset.v,
   content:el.content.value, all_types:el.all_types.checked,
   types:[...document.querySelectorAll('.tcheck')].filter(c=>c.checked).map(c=>c.dataset.type),
-  frequency:el.frequency.value, time:el.time.value, mat:el.mat.value, mac:el.mac.value.trim(),
-  placard:true, replace:true};}
+  qr:el.qr.checked, frequency:el.frequency.value, time:el.time.value, mat:el.mat.value,
+  mac:el.mac.value.trim(), placard:true, replace:true};}
 async function post(url,btn,label){el.status.textContent=label+'…';
   const old=btn.textContent; btn.disabled=true;
   try{const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(collect())});

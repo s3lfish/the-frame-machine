@@ -11,6 +11,21 @@ to the TV directly over its local WebSocket API — no cloud, no account, no sub
 
 ![example placard](docs/example.jpg)
 
+> ⚠️ **A word of warning.** This is vibe-coded by someone who has no idea what they're doing.
+> It will almost certainly break your TV, and there is a non-trivial chance it will run away
+> with your significant other. No warranties are offered — express, implied, or marital. Use
+> entirely at your own risk, and keep a spare spouse handy.
+
+## Examples
+
+| Made-up tale (a painting) | The Met's real caption (an object) | A sculpture, made-up |
+|---|---|---|
+| ![](docs/example.jpg) | ![](docs/example-real.jpg) | ![](docs/example-object.jpg) |
+
+Every piece keeps its real artist, title and date up top; the story below is either the Met's
+own words, a cheerfully invented tale, or nothing — your choice. A QR code (toggleable) links
+to the genuine museum page.
+
 ## What it does
 
 - **Free art, daily.** Fetches public-domain works from the keyless [Met Collection API](https://metmuseum.github.io/).
@@ -101,8 +116,9 @@ python3 app.py --port 8080     # then open http://<this-machine>.local:8080
 
 It offers **Caption** (None / Real Met caption / Made-up tale), **Content** (whole museum, the
 daily genre cycle, or a single genre), **object types** (tick "All", or uncheck it to choose
-specific families — Paintings, Prints, Sculpture, Ceramics, Photographs, Glass, …), **mat
-colour**, and **how often / when** the art changes — plus **Preview** and **Change the art now**. It writes
+specific families — Paintings, Prints, Sculpture, Ceramics, Photographs, Glass, …), a **QR-code
+toggle**, **mat colour**, and **how often / when** the art changes — plus **Preview** and
+**Change the art now**. It writes
 `~/.config/frame/config.json` (which `frame_push.py` reads for its defaults) and, on macOS,
 creates and reloads the daily launchd schedule for you from the frequency/time you pick.
 

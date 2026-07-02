@@ -98,7 +98,7 @@ CONFIG = os.path.join(CFG, "config.json")   # written by the web GUI, read here 
 
 # Defaults the GUI can override via config.json.
 DEFAULTS = {"mac": "", "ip": None, "description": "made-up", "content": "museum",
-            "all_types": True, "types": [], "placard": True, "mat": "charcoal",
+            "all_types": True, "types": [], "placard": True, "qr": True, "mat": "charcoal",
             "fetch": 1, "replace": True, "frequency": "daily", "time": "07:30"}
 
 def load_config():
@@ -363,7 +363,7 @@ def all_object_ids():
         pass
     return ids
 
-def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None):
+def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None, qr=True):
     os.makedirs(TMP, exist_ok=True)
     # Gather candidate object IDs, then pull each object's record and download its
     # public-domain image until we have enough.
@@ -445,7 +445,7 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
                     desc = ai_blurb(meta)                          # an invented tale (needs a key)
                 if desc:
                     print(f"    + {describe}: {desc[:60]}...")
-                link = o.get("objectURL") if describe != "off" else None
+                link = o.get("objectURL") if (describe != "off" and qr) else None
                 mat_with_placard(art, meta, mat_rgb, desc, link).save(p, "JPEG", quality=JPEG_Q)
             else:
                 mat_image(art, mat_rgb).save(p, "JPEG", quality=JPEG_Q)
@@ -482,7 +482,7 @@ def run(args):
     if args.preview:
         os.makedirs(CFG, exist_ok=True)
         paths = (prep_local(args.files, mat_rgb) if args.files else
-                 fetch_matted(1, args.query, mat_rgb, args.theme, args.placard, args.all_types, args.describe, args.types))
+                 fetch_matted(1, args.query, mat_rgb, args.theme, args.placard, args.all_types, args.describe, args.types, args.qr))
         if not paths:
             raise RuntimeError("No image to preview.")
         import shutil
@@ -510,7 +510,7 @@ def run(args):
 
     print("Preparing images...")
     paths = prep_local(args.files, mat_rgb) if args.files else fetch_matted(
-        args.fetch, args.query, mat_rgb, args.theme, args.placard, args.all_types, args.describe, args.types)
+        args.fetch, args.query, mat_rgb, args.theme, args.placard, args.all_types, args.describe, args.types, args.qr)
     if not paths:
         raise RuntimeError("No images to upload.")
 
@@ -592,6 +592,8 @@ def main():
                     help="with --no-all-types, comma-separated families to allow, e.g. 'Paintings,Prints'")
     ap.add_argument("--describe", choices=["off", "real", "made-up"], default=cfg["description"],
                     help="caption: off, the Met's real prose, or an invented tale (needs a key)")
+    ap.add_argument("--qr", action=argparse.BooleanOptionalAction, default=cfg["qr"],
+                    help="show a QR code linking to the real Met page (when a caption is shown)")
     ap.add_argument("--preview", default=None, metavar="PATH",
                     help="render one image to PATH and exit — does not touch the TV")
     ap.add_argument("--mat", choices=MAT_COLORS, default=cfg["mat"])
