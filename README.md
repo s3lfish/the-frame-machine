@@ -27,6 +27,8 @@ to the TV directly over its local WebSocket API — no cloud, no account, no sub
   **QR code** links to the genuine Met page so you can check the truth.
 - **Rotates cleanly.** `--replace` prunes the previous day's upload so nothing piles up. Never
   touches art you added yourself.
+- **Web control panel.** A phone-friendly page to pick the content, caption style, how often the
+  art changes and when — with **Preview** and **Change now** buttons. No config-file editing.
 
 ## Requirements
 
@@ -89,7 +91,39 @@ Cost is a fraction of a cent per run. Without a key, `--describe` simply shows t
 label (no story). *(A `met_prose()` helper that scrapes the Met's own real captions is included
 but unused by default — see the code if you'd prefer authentic captions to invented ones.)*
 
-## Running it daily
+## Web control panel (recommended)
+
+Instead of editing flags, run the little web app and control everything from your phone:
+
+```bash
+python3 app.py --port 8080     # then open http://<this-machine>.local:8080
+```
+
+It offers **Caption** (None / Real Met caption / Made-up tale), **Content** (whole museum, the
+daily genre cycle, or a single genre), **all-object-types** toggle, **mat colour**, and **how
+often / when** the art changes — plus **Preview** and **Change the art now**. It writes
+`~/.config/frame/config.json` (which `frame_push.py` reads for its defaults) and, on macOS,
+creates and reloads the daily launchd schedule for you from the frequency/time you pick.
+
+To keep the panel always running, install it as a service with the template
+`com.example.frameart-gui.plist` (fill the `__PLACEHOLDERS__`, then bootstrap it — same steps as
+below). macOS may ask once to "allow incoming connections" for Python — approve it so other
+devices can reach the page.
+
+### config.json
+
+Everything the panel sets lives in `~/.config/frame/config.json`, e.g.:
+
+```json
+{ "mac": "AA:BB:CC:DD:EE:FF", "description": "made-up", "content": "museum",
+  "all_types": true, "mat": "charcoal", "frequency": "daily", "time": "07:30" }
+```
+
+You can edit it by hand instead of using the panel; CLI flags override it per-run.
+
+## Running it daily (without the panel)
+
+If you'd rather not run the web app, schedule `frame_push.py` yourself.
 
 **macOS (launchd).** Edit `com.example.frameart.plist` (fill in the `__PLACEHOLDERS__`: absolute
 python path, script path, your MAC), then:

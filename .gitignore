@@ -14,3 +14,7 @@ last_run.txt
 
 # OS
 .DS_Store
+
+# local dev
+.claude/
+frame_preview.jpg

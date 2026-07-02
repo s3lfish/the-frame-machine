@@ -78,6 +78,21 @@ HOME = os.path.expanduser("~")
 CFG = os.path.join(HOME, ".config/frame")
 HEARTBEAT = os.path.join(CFG, "last_run.txt")
 STATE = os.path.join(CFG, "uploaded.json")
+CONFIG = os.path.join(CFG, "config.json")   # written by the web GUI, read here for defaults
+
+# Defaults the GUI can override via config.json.
+DEFAULTS = {"mac": "", "ip": None, "description": "made-up", "content": "museum",
+            "all_types": True, "placard": True, "mat": "charcoal",
+            "fetch": 1, "replace": True, "frequency": "daily", "time": "07:30"}
+
+def load_config():
+    cfg = dict(DEFAULTS)
+    try:
+        if os.path.exists(CONFIG):
+            cfg.update({k: v for k, v in json.load(open(CONFIG)).items() if v is not None})
+    except Exception as e:
+        print(f"  ! config read: {str(e)[:80]}", file=sys.stderr)
+    return cfg
 
 # ---------- locate the TV by MAC (verify reachability, avoid stale ARP) ----------
 def _arp_ip_for_mac(mac):
@@ -332,7 +347,7 @@ def all_object_ids():
         pass
     return ids
 
-def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe=False):
+def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off"):
     os.makedirs(TMP, exist_ok=True)
     # Gather candidate object IDs, then pull each object's record and download its
     # public-domain image until we have enough.
@@ -389,11 +404,13 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
                         "culture": culture, "objectName": o.get("objectName"), "culture_period": cp,
                         "credit": o.get("creditLine")}
                 desc = None
-                if describe:
-                    desc = ai_blurb(meta)   # always an invented tale; met_prose() kept for optional real prose
-                    if desc:
-                        print(f"    + tale: {desc[:60]}...")
-                link = o.get("objectURL") if describe else None
+                if describe == "real":
+                    desc = met_prose(o.get("objectURL"))          # the Met's own caption (may be None)
+                elif describe == "made-up":
+                    desc = ai_blurb(meta)                          # an invented tale (needs a key)
+                if desc:
+                    print(f"    + {describe}: {desc[:60]}...")
+                link = o.get("objectURL") if describe != "off" else None
                 mat_with_placard(art, meta, mat_rgb, desc, link).save(p, "JPEG", quality=JPEG_Q)
             else:
                 mat_image(art, mat_rgb).save(p, "JPEG", quality=JPEG_Q)
@@ -425,6 +442,19 @@ def notify(msg):
 # ---------- main ----------
 def run(args):
     mat_rgb = MAT_COLORS[args.mat]
+
+    # Preview: render one image to a file and stop — never touches the TV.
+    if args.preview:
+        os.makedirs(CFG, exist_ok=True)
+        paths = (prep_local(args.files, mat_rgb) if args.files else
+                 fetch_matted(1, args.query, mat_rgb, args.theme, args.placard, args.all_types, args.describe))
+        if not paths:
+            raise RuntimeError("No image to preview.")
+        import shutil
+        shutil.copy(paths[0], args.preview)
+        print(f"Preview written: {args.preview}")
+        return
+
     if not args.mac:
         raise RuntimeError("No TV MAC set. Pass --mac AA:BB:CC:DD:EE:FF, or set FRAME_MAC in "
                            "the environment. Find it on the Frame under About This TV, or your router.")
@@ -507,27 +537,30 @@ def run(args):
     print(f"\nDone. {len(ids)} uploaded. Heartbeat: {HEARTBEAT}")
 
 def main():
+    cfg = load_config()   # config.json supplies defaults; CLI flags override
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ip", default=os.environ.get("FRAME_IP"),
+    ap.add_argument("--ip", default=os.environ.get("FRAME_IP") or cfg["ip"],
                     help="optional IP hint; the TV is found by MAC regardless (DHCP-proof)")
-    ap.add_argument("--mac", default=FRAME_MAC,
-                    help="the Frame's wireless MAC (or set FRAME_MAC env); the TV is located by this")
+    ap.add_argument("--mac", default=os.environ.get("FRAME_MAC") or cfg["mac"],
+                    help="the Frame's wireless MAC (or set FRAME_MAC env / config); the TV is located by this")
     ap.add_argument("--token-file", default=os.path.join(CFG, "token.txt"))
-    ap.add_argument("--fetch", type=int, default=1)
+    ap.add_argument("--fetch", type=int, default=cfg["fetch"])
     ap.add_argument("--query", default=None, help="freeform search term (overrides --theme)")
-    ap.add_argument("--theme", default=None, choices=list(THEMES) + ["cycle", "museum"],
+    ap.add_argument("--theme", default=cfg["content"], choices=list(THEMES) + ["cycle", "museum"],
                     help="named style, 'cycle' to rotate one genre/day, or 'museum' for a random piece from the whole collection")
-    ap.add_argument("--placard", action="store_true",
+    ap.add_argument("--placard", action=argparse.BooleanOptionalAction, default=cfg["placard"],
                     help="compose artwork + a gallery-label caption panel (title/artist/details)")
-    ap.add_argument("--all-types", action="store_true",
+    ap.add_argument("--all-types", action=argparse.BooleanOptionalAction, default=cfg["all_types"],
                     help="allow every object type (sculpture, photos, ceramics...), not just wall art")
-    ap.add_argument("--describe", action="store_true",
-                    help="add a description: the Met's own prose if available, else an AI blurb (needs a key)")
-    ap.add_argument("--mat", choices=MAT_COLORS, default="off_white")
+    ap.add_argument("--describe", choices=["off", "real", "made-up"], default=cfg["description"],
+                    help="caption: off, the Met's real prose, or an invented tale (needs a key)")
+    ap.add_argument("--preview", default=None, metavar="PATH",
+                    help="render one image to PATH and exit — does not touch the TV")
+    ap.add_argument("--mat", choices=MAT_COLORS, default=cfg["mat"])
     ap.add_argument("--files", nargs="*")
     ap.add_argument("--no-select", action="store_true")
     ap.add_argument("--slideshow", type=int, default=None)
-    ap.add_argument("--replace", action="store_true")
+    ap.add_argument("--replace", action=argparse.BooleanOptionalAction, default=cfg["replace"])
     ap.add_argument("--timeout", type=int, default=30, help="socket timeout (s) so it never hangs")
     ap.add_argument("--wake-wait", type=int, default=12, help="seconds to wait after WoL before probing")
     ap.add_argument("--retries", type=int, default=3, help="wake+probe attempts")

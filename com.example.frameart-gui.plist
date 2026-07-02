@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- macOS launchd template to keep the web control panel (app.py) always running.
+     Fill the __PLACEHOLDERS__, then:
+       cp com.example.frameart-gui.plist ~/Library/LaunchAgents/
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.frameart-gui.plist
+     Then open http://<this-machine>.local:8080 from any device on your network.
+     (The daily art schedule is created for you by the panel itself — you don't hand-write it.) -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.frameart.gui</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON__</string>
+    <string>__PATH_TO__/app.py</string>
+    <string>--port</string><string>8080</string>
+  </array>
+  <key>WorkingDirectory</key><string>__PATH_TO__</string>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>EnvironmentVariables</key><dict><key>PYTHONUNBUFFERED</key><string>1</string></dict>
+  <key>StandardOutPath</key><string>__PATH_TO__/frameart-gui.log</string>
+  <key>StandardErrorPath</key><string>__PATH_TO__/frameart-gui.log</string>
+</dict></plist>
