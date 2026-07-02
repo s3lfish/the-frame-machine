@@ -13,7 +13,7 @@ Examples:
     python3 frame_push.py --fetch 12 --query Hiroshige      # themed batch
 """
 
-import argparse, io, os, re, json, random, subprocess, sys, time, warnings, datetime, html
+import argparse, io, os, re, json, random, subprocess, sys, time, warnings, datetime, html, platform
 import requests
 from PIL import Image, ImageDraw, ImageFont
 try:
@@ -216,8 +216,12 @@ def _arp_ip_for_mac(mac):
                 return m.group(1)
     return None
 
+# 1-second timeout flag differs by OS: -t on macOS is seconds, but on Linux -t is TTL,
+# so Linux needs -W. (Getting this wrong makes a /24 sweep hang on every dead IP.)
+_PING = ["ping", "-c1"] + (["-t", "1"] if platform.system() == "Darwin" else ["-W", "1"])
+
 def _reachable(ip):
-    return subprocess.run(["ping", "-c1", "-t1", ip], capture_output=True).returncode == 0
+    return subprocess.run(_PING + [ip], capture_output=True).returncode == 0
 
 def resolve_frame_ip(preferred, mac):
     # trust preferred only if it actually answers and maps to the MAC
@@ -226,7 +230,7 @@ def resolve_frame_ip(preferred, mac):
             return preferred
     # otherwise sweep, then take a *reachable* ARP match
     base = ".".join((preferred or "192.168.1.1").split(".")[:3])
-    procs = [subprocess.Popen(["ping", "-c1", "-t1", f"{base}.{i}"],
+    procs = [subprocess.Popen(_PING + [f"{base}.{i}"],
              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for i in range(1, 255)]
     for p in procs:
         p.wait()

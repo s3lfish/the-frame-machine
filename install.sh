@@ -22,6 +22,16 @@ echo "  • Installing Python packages (this can take a minute)…"
 "$PY" -m pip install --quiet -r requirements.txt
 echo "  ✓ Packages installed"
 
+# 2b. On Linux, make sure a serif font exists (the placard needs one; macOS has Georgia).
+if [ "$(uname)" != "Darwin" ]; then
+  if ! ls /usr/share/fonts/**/LiberationSerif-Regular.ttf /usr/share/fonts/**/DejaVuSerif.ttf >/dev/null 2>&1 \
+     && ! fc-list 2>/dev/null | grep -qiE "liberation serif|dejavu serif"; then
+    echo "  • No serif font found — installing one for the captions…"
+    (sudo apt-get install -y fonts-liberation >/dev/null 2>&1) \
+      || echo "  ⚠ Couldn't auto-install. For nicer captions run: sudo apt install fonts-liberation"
+  fi
+fi
+
 # 3. TV MAC address
 CFG="$HOME/.config/frame"; mkdir -p "$CFG"
 EXISTING_MAC="$("$PY" - <<'PY' 2>/dev/null || true
