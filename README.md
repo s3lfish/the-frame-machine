@@ -60,6 +60,13 @@ to the genuine museum page.
 - **Subject & holiday modes.** Ask for "only show art of cats" (or dogs, dragons, anything),
   or let it get festive — spooky art near Halloween, nativities at Christmas, hearts for
   Valentine's.
+- **Weather-reactive.** Optionally match the art to your live local weather — rain, snow or
+  sunshine — via [open-meteo](https://open-meteo.com) (keyless; auto-locates by IP, or set
+  coordinates).
+- **On this day.** Optionally tie the art to a real historical event from today's date (drawn
+  from Wikipedia's *On this day*).
+- **Googly eyes.** Just for fun: detect any faces in the art and slap cartoon googly eyes on
+  them. (Optional — needs `opencv-python-headless`, installed by default.)
 - **Mission-control dashboard.** See what's on the TV now, when it last changed, and whether the
   last run worked — plus **Pin** (hold a piece), **Ban** (never show it again) and no-repeats.
 - **Seasonal mode.** Optionally bias the art to the season (hemisphere-aware).
@@ -126,7 +133,9 @@ When the installer finishes it prints a link — open it on any phone or laptop 
 - **Caption:** none, the museum's own real caption, or a made-up tale — in ~18 voices (pirate,
   noir, Shakespearean, Attenborough, topical…), one picked at random.
 - **Content:** the whole museum, a single genre, a genre-a-day cycle, or *"only show art of
-  cats"*. Match the season or celebrate holidays. Pick the museum (the Met, Cleveland, or either).
+  cats"*. Match the season, the live weather, or a historical event *on this day*; celebrate
+  holidays. Pick the museum (the Met, Cleveland, or either).
+- **Googly eyes** — a toggle to stick cartoon eyes on any faces in the art, just for fun.
 - **Object types**, **mat colour**, and a **QR-code** toggle.
 - **How often & when** the art changes — the panel builds the schedule for you (launchd on
   macOS, cron on Linux).
@@ -152,7 +161,9 @@ Prefer the terminal? `frame_push.py` does everything via flags (they override `c
 ```bash
 python3 frame_push.py --theme museum --describe made-up     # a random piece + a tall tale
 python3 frame_push.py --source cleveland --subject cats     # Cleveland, cats only
-python3 frame_push.py --files a.jpg b.jpg                    # push your own images
+python3 frame_push.py --weather                             # match the live local weather
+python3 frame_push.py --on-this-day                        # art tied to a historical event today
+python3 frame_push.py --files a.jpg b.jpg --googly          # push your own images, with googly eyes
 ```
 
 Run `python3 frame_push.py --help` for every flag.

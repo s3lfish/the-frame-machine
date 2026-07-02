@@ -13,7 +13,7 @@ Examples:
     python3 frame_push.py --preview /tmp/out.jpg --no-placard      # render only, don't touch the TV
 """
 
-import argparse, io, os, re, json, random, subprocess, sys, time, warnings, datetime, html, platform
+import argparse, io, os, re, json, math, random, subprocess, sys, time, warnings, datetime, html, platform
 import requests
 from PIL import Image, ImageDraw, ImageFont
 try:
@@ -24,6 +24,10 @@ try:
     import qrcode
 except Exception:
     qrcode = None
+try:                                    # optional: face detection for --googly (opencv)
+    import cv2, numpy as np
+except Exception:
+    cv2 = None
 
 warnings.filterwarnings("ignore")
 
@@ -114,10 +118,93 @@ def holiday_terms():
             return terms
     return None
 
-def bias_terms(subject="", holidays=False, seasonal=False, hemisphere="north"):
+# Live weather -> search bias. open-meteo is keyless; it reports a WMO weather code
+# which we bucket into a handful of moods, each with its own art search terms.
+WEATHER_TERMS = {
+    "clear": ["sunshine", "sunny", "blue sky", "summer"],
+    "cloud": ["clouds", "overcast", "grey sky"],
+    "fog":   ["fog", "mist", "haze"],
+    "rain":  ["rain", "storm", "umbrella", "rainy day"],
+    "snow":  ["snow", "winter", "frost", "blizzard"],
+    "storm": ["storm", "lightning", "tempest", "thunder"],
+}
+def _wmo_bucket(code):
+    if code in (1, 2, 3):                       return "cloud"
+    if code in (45, 48):                        return "fog"
+    if code in (71, 73, 75, 77, 85, 86):        return "snow"
+    if code in (95, 96, 99):                    return "storm"
+    if 51 <= code <= 82:                        return "rain"   # drizzle/rain/showers
+    return "clear"                              # 0 clear, and anything unexpected
+
+def _geolocate():
+    """Best-effort (lat, lon) from the machine's public IP, cached ~7 days. Keyless."""
+    cache = os.path.join(CFG, "geo.json")
+    try:
+        if os.path.exists(cache) and time.time() - os.path.getmtime(cache) < 7*86400:
+            g = json.load(open(cache)); return g.get("lat"), g.get("lon")
+    except Exception:
+        pass
+    j = met_json("https://ipapi.co/json/", timeout=10)
+    lat, lon = j.get("latitude"), j.get("longitude")
+    if lat is not None and lon is not None:
+        try:
+            os.makedirs(CFG, exist_ok=True); json.dump({"lat": lat, "lon": lon}, open(cache, "w"))
+        except Exception:
+            pass
+        return lat, lon
+    return None, None
+
+def weather_terms(latitude=None, longitude=None):
+    """Search terms matching the current weather at (lat,lon) via open-meteo (keyless).
+    Falls back to IP geolocation when no coordinates are configured; None if it can't tell."""
+    lat, lon = latitude, longitude
+    if lat is None or lon is None:
+        lat, lon = _geolocate()
+    if lat is None or lon is None:
+        return None
+    j = met_json("https://api.open-meteo.com/v1/forecast",
+                 params={"latitude": lat, "longitude": lon, "current_weather": "true"}, timeout=15)
+    code = (j.get("current_weather") or {}).get("weathercode")
+    if code is None:
+        return None
+    bucket = _wmo_bucket(int(code))
+    print(f"  weather: code {code} -> {bucket}")
+    return WEATHER_TERMS.get(bucket)
+
+def on_this_day_terms():
+    """Search terms from real historical events on today's calendar date (Wikipedia's
+    'On this day', keyless). Prefers OLDER events (they map to museum collections far
+    better than modern news) and returns several candidate titles, or None."""
+    t = datetime.date.today()
+    j = met_json(f"https://en.wikipedia.org/api/rest_v1/feed/onthisday/events/{t.month:02d}/{t.day:02d}",
+                 timeout=15)
+    events = j.get("events") or []
+    if not events:
+        return None
+    events.sort(key=lambda e: e.get("year") or 9999)     # oldest first
+    pool = events[:max(6, len(events)//2)]               # from the older half
+    random.shuffle(pool)
+    terms = []
+    for ev in pool:
+        for pg in (ev.get("pages") or []):               # one salient page title per event
+            name = (pg.get("normalizedtitle") or pg.get("title") or "").replace("_", " ").strip()
+            if name and not re.fullmatch(r"\d{1,4}", name) and "List of" not in name:
+                terms.append(name); break
+        if len(terms) >= 6:
+            break
+    if terms:
+        print(f"  on this day: {'; '.join(terms)}")
+    return terms or None
+
+def bias_terms(subject="", holidays=False, seasonal=False, hemisphere="north",
+               weather=False, on_this_day=False, latitude=None, longitude=None):
     """Search terms a special mode wants, or None for 'normal'. A typed subject COMBINES
-    with an active holiday/season (e.g. 'cats' in December -> 'cats christmas', 'cats snow')."""
-    base = (holiday_terms() if holidays else None) or (seasonal_terms(hemisphere) if seasonal else None)
+    with an active bias (e.g. 'cats' in December -> 'cats christmas'). When several biases
+    are on, the most specific wins: holiday > on-this-day > weather > season."""
+    base = (holiday_terms() if holidays else None) \
+        or (on_this_day_terms() if on_this_day else None) \
+        or (weather_terms(latitude, longitude) if weather else None) \
+        or (seasonal_terms(hemisphere) if seasonal else None)
     subject = (subject or "").strip()
     if subject and base:
         return [f"{subject} {t}" for t in base]
@@ -140,7 +227,8 @@ DEFAULTS = {"mac": "", "ip": None, "description": "made-up", "content": "museum"
             "fetch": 1, "replace": True, "frequency": "daily", "time": "07:30",
             "ntfy_topic": "", "tone": ["whimsical"], "source": "met", "orientation": "landscape",
             "pinned": False, "seasonal": False, "hemisphere": "north",
-            "subject": "", "holidays": False}
+            "subject": "", "holidays": False, "weather": False, "on_this_day": False,
+            "googly": False, "latitude": None, "longitude": None}
 STATUS = os.path.join(CFG, "status.json")   # last-run outcome, for alerts + the dashboard
 HISTORY = os.path.join(CFG, "history.json") # recently displayed pieces (for no-repeats + dashboard)
 BLOCKLIST = os.path.join(CFG, "blocklist.json")  # ids the user has banned
@@ -323,6 +411,53 @@ def mat_image(art, mat_rgb):
     canvas = Image.new("RGB", CANVAS, mat_rgb)
     canvas.paste(art, ((cw-art.width)//2, (ch-art.height)//2))
     return canvas
+
+# ---------- googly eyes (optional silliness) ----------
+def _draw_googly(draw, box):
+    """Draw one wobbly cartoon eye filling `box` (x, y, w, h) in image coords."""
+    x, y, w, h = box
+    cx, cy, r = x + w/2, y + h/2, max(w, h) * 0.55
+    draw.ellipse([cx-r, cy-r, cx+r, cy+r], fill=(255, 255, 255),
+                 outline=(20, 20, 20), width=max(2, int(r*0.09)))
+    pr, off, ang = r*0.42, r*0.4, random.uniform(0, 2*math.pi)   # pupil, offset for the "googly" wobble
+    px, py = cx + off*math.cos(ang), cy + off*math.sin(ang)
+    draw.ellipse([px-pr, py-pr, px+pr, py+pr], fill=(12, 12, 12))
+
+def add_googly_eyes(img):
+    """Stick cartoon googly eyes on every detected face. Uses opencv Haar cascades; returns
+    the image unchanged if opencv isn't installed or nothing face-like is found."""
+    if cv2 is None:
+        print("  ! googly eyes need opencv — run: pip install opencv-python-headless", file=sys.stderr)
+        return img
+    try:
+        gray = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
+        base = cv2.data.haarcascades
+        faces = list(cv2.CascadeClassifier(base + "haarcascade_frontalface_default.xml").detectMultiScale(
+            gray, scaleFactor=1.1, minNeighbors=5,     # trigger-happy on purpose — false "faces" are half the fun
+            minSize=(max(24, img.width//30), max(24, img.height//30))))
+        if len(faces) > 1:                          # only drop near-invisible specks (a smudge isn't funny; a face in a cloud is)
+            biggest = max(fw*fh for (fx, fy, fw, fh) in faces)
+            faces = [f for f in faces if f[2]*f[3] >= 0.06*biggest]
+        eye_cc = cv2.CascadeClassifier(base + "haarcascade_eye.xml")
+        draw, n = ImageDraw.Draw(img), 0
+        for (fx, fy, fw, fh) in faces:
+            eyes = eye_cc.detectMultiScale(gray[fy:fy+fh, fx:fx+fw], scaleFactor=1.1,
+                                           minNeighbors=6, minSize=(max(8, fw//12),)*2)
+            eyes = sorted(eyes, key=lambda e: e[2]*e[3], reverse=True)[:2]
+            if eyes:
+                boxes = [(fx+ex, fy+ey, ew, eh) for (ex, ey, ew, eh) in eyes]
+            else:                                   # no eyes detected — fake a pair in the upper face
+                ew = fw // 5; ey = fy + int(fh*0.32)
+                boxes = [(fx + int(fw*0.24) - ew//2, ey, ew, ew),
+                         (fx + int(fw*0.66) - ew//2, ey, ew, ew)]
+            for b in boxes:
+                _draw_googly(draw, b)
+            n += 1
+        print(f"  googly eyes: {n} face(s)")
+        return img
+    except Exception as e:
+        print(f"  ! googly eyes: {str(e)[:100]}", file=sys.stderr)
+        return img
 
 # ---------- museum-placard layout (artwork + caption panel) ----------
 # Serif fonts by style, with cross-platform fallbacks (macOS Georgia, else common
@@ -526,9 +661,11 @@ def mat_with_placard(art, meta, mat_rgb, desc=None, link=None):
             print(f"  ! qr: {str(e)[:80]}", file=sys.stderr)
     return canvas
 
-def _render_piece(art, meta, mat_rgb, path, placard, describe, qr, tone, page_url, real_text=None, scrape=False):
+def _render_piece(art, meta, mat_rgb, path, placard, describe, qr, tone, page_url, real_text=None, scrape=False, googly=False):
     """Render one artwork to `path`: plain art, or a placard with an optional caption + QR.
     'real' captions come from `real_text` (Cleveland) or by scraping the Met page (scrape=True)."""
+    if googly:
+        art = add_googly_eyes(art)
     desc = None
     if placard and describe == "real":
         desc = _truncate_prose(real_text) if real_text else (met_prose(page_url) if scrape else None)
@@ -573,11 +710,11 @@ def all_object_ids():
         pass
     return ids
 
-def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", subject="", holidays=False):
+def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", subject="", holidays=False, weather=False, on_this_day=False, latitude=None, longitude=None, googly=False):
     os.makedirs(TMP, exist_ok=True)
     LAST_PIECES.clear()
     avoid = avoid or set()
-    bias = bias_terms(subject, holidays, seasonal, hemisphere)
+    bias = bias_terms(subject, holidays, seasonal, hemisphere, weather, on_this_day, latitude, longitude)
     # Gather candidate object IDs, then pull each object's record and download its
     # public-domain image until we have enough.
     if bias and not query:
@@ -649,7 +786,7 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
                     "culture": culture, "objectName": o.get("objectName"), "culture_period": cp,
                     "credit": o.get("creditLine"), "museum": "The Metropolitan Museum of Art"}
             p = os.path.join(TMP, f"{len(paths)+1:02d}_{slug(o.get('title','art'))}.jpg")
-            _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("objectURL"), scrape=True)
+            _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("objectURL"), scrape=True, googly=googly)
             paths.append(p)
             LAST_PIECES.append({"title": o.get("title") or "", "source": o.get("_source_name", "The Met"),
                                 "artist": o.get("artistDisplayName") or o.get("culture") or "Unknown",
@@ -662,14 +799,14 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
 CLE_API = "https://openaccess-api.clevelandart.org/api/artworks/"
 CLE_NAME = "Cleveland Museum of Art"
 
-def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", all_types=True, subject="", holidays=False):
+def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", all_types=True, subject="", holidays=False, weather=False, on_this_day=False, latitude=None, longitude=None, googly=False):
     """Second source: Cleveland Museum of Art open access (keyless, CC0). Its API carries
     a real 'description', so 'real' captions need no scraping."""
     os.makedirs(TMP, exist_ok=True); LAST_PIECES.clear()
     avoid = avoid or set()
     params = {"has_image": "1", "cc0": "1", "limit": "100", "indent": "1"}
     q = query
-    _bias = bias_terms(subject, holidays, seasonal, hemisphere)
+    _bias = bias_terms(subject, holidays, seasonal, hemisphere, weather, on_this_day, latitude, longitude)
     if not q and _bias:
         q = random.choice(_bias)
     elif not q and theme == "cycle":
@@ -718,7 +855,7 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
                 continue
             art = Image.open(io.BytesIO(r.content)).convert("RGB")
             p = os.path.join(TMP, f"{len(paths)+1:02d}_{slug(meta['title'])}.jpg")
-            _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("url"), real_text=o.get("description"))
+            _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("url"), real_text=o.get("description"), googly=googly)
             paths.append(p)
             LAST_PIECES.append({"title": meta["title"], "artist": name or meta["culture"] or "Unknown",
                                 "url": o.get("url") or "", "source": CLE_NAME, "id": f"cle:{o.get('id')}"})
@@ -727,12 +864,14 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
             print(f"  ! skip {o.get('id')}: {str(e)[:120]}", file=sys.stderr)
     return paths
 
-def prep_local(files, mat_rgb):
+def prep_local(files, mat_rgb, googly=False):
     os.makedirs(TMP, exist_ok=True)
     out = []
     for f in files:
         im = Image.open(f).convert("RGB")
-        if im.size != CANVAS:
+        if googly:
+            im = add_googly_eyes(im)
+        if googly or im.size != CANVAS:
             p = os.path.join(TMP, f"local_{slug(os.path.basename(f))}.jpg")
             mat_image(im, mat_rgb).save(p, "JPEG", quality=JPEG_Q); out.append(p)
         else:
@@ -763,10 +902,12 @@ def _fetch_source(args, mat_rgb, count):
     if src == "cleveland":
         return fetch_cleveland(count, args.query, mat_rgb, args.theme, args.placard,
                                args.describe, args.types, args.qr, args.tone, avoid,
-                               args.seasonal, args.hemisphere, args.all_types, args.subject, args.holidays)
+                               args.seasonal, args.hemisphere, args.all_types, args.subject, args.holidays,
+                               args.weather, args.on_this_day, args.latitude, args.longitude, args.googly)
     return fetch_matted(count, args.query, mat_rgb, args.theme, args.placard, args.all_types,
                         args.describe, args.types, args.qr, args.tone, avoid, args.seasonal,
-                        args.hemisphere, args.subject, args.holidays)
+                        args.hemisphere, args.subject, args.holidays,
+                        args.weather, args.on_this_day, args.latitude, args.longitude, args.googly)
 
 FAV_CHANCE = 0.2   # chance a scheduled run re-shows a favourite instead of fresh art
 
@@ -775,7 +916,7 @@ def _gather(args, mat_rgb, count):
     and used as a graceful fallback if fresh art can't be fetched. Preview and an explicit
     'change now' (--force) always fetch fresh; only automatic runs re-show favourites."""
     if args.files:
-        return prep_local(args.files, mat_rgb)
+        return prep_local(args.files, mat_rgb, args.googly)
     if not args.preview and not args.force and random.random() < FAV_CHANCE:
         fav = favourite_pick()
         if fav:
@@ -952,6 +1093,17 @@ def main():
                     help="only show art of this subject, e.g. 'cats' (overrides content/season)")
     ap.add_argument("--holidays", action=argparse.BooleanOptionalAction, default=cfg.get("holidays", False),
                     help="theme the art around nearby holidays (Halloween, Christmas…)")
+    ap.add_argument("--weather", action=argparse.BooleanOptionalAction, default=cfg.get("weather", False),
+                    help="bias art to the live local weather (open-meteo, keyless)")
+    ap.add_argument("--on-this-day", dest="on_this_day", action=argparse.BooleanOptionalAction,
+                    default=cfg.get("on_this_day", False),
+                    help="bias art to a historical event from today's date (Wikipedia)")
+    ap.add_argument("--latitude", type=float, default=cfg.get("latitude"),
+                    help="latitude for --weather (falls back to IP geolocation if unset)")
+    ap.add_argument("--longitude", type=float, default=cfg.get("longitude"),
+                    help="longitude for --weather (falls back to IP geolocation if unset)")
+    ap.add_argument("--googly", action=argparse.BooleanOptionalAction, default=cfg.get("googly", False),
+                    help="stick cartoon googly eyes on detected faces (needs opencv)")
     ap.add_argument("--preview", default=None, metavar="PATH",
                     help="render one image to PATH and exit — does not touch the TV")
     ap.add_argument("--force", action="store_true", help="change the art even if pinned")

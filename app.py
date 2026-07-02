@@ -93,7 +93,12 @@ def flags_from(cfg):
     f += ["--replace"] if cfg.get("replace", True) else ["--no-replace"]
     f += ["--seasonal"] if cfg.get("seasonal") else ["--no-seasonal"]
     f += ["--holidays"] if cfg.get("holidays") else ["--no-holidays"]
+    f += ["--weather"] if cfg.get("weather") else ["--no-weather"]
+    f += ["--on-this-day"] if cfg.get("on_this_day") else ["--no-on-this-day"]
+    f += ["--googly"] if cfg.get("googly") else ["--no-googly"]
     f += ["--hemisphere", cfg.get("hemisphere", "north")]
+    if cfg.get("latitude") is not None and cfg.get("longitude") is not None:
+        f += ["--latitude", str(cfg["latitude"]), "--longitude", str(cfg["longitude"])]
     if (cfg.get("subject") or "").strip():
         f += ["--subject", cfg["subject"].strip()]
     f += ["--fetch", str(cfg.get("fetch", 1))]
@@ -383,6 +388,12 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    <span>Match the season <span class="sub">— bias to snow, blossom, harvest…</span></span></label>
  <label class="chk" style="margin-top:14px"><input type="checkbox" id="holidays">
    <span>Celebrate holidays <span class="sub">— spooky art at Halloween, nativity at Christmas…</span></span></label>
+ <label class="chk" style="margin-top:14px"><input type="checkbox" id="weather">
+   <span>Match today's weather <span class="sub">— rain, snow or sunshine, from your local forecast</span></span></label>
+ <label class="chk" style="margin-top:14px"><input type="checkbox" id="on_this_day">
+   <span>On this day <span class="sub">— art tied to a historical event from today's date</span></span></label>
+ <label class="chk" style="margin-top:14px"><input type="checkbox" id="googly">
+   <span>Googly eyes <span class="sub">— stick cartoon eyes on any faces, just for fun</span></span></label>
  <label class="chk" style="margin-top:14px"><input type="checkbox" id="all_types">
    <span>All object types <span class="sub">— everything the museum has</span></span></label>
  <div id="typegrid" class="typegrid">
@@ -429,6 +440,12 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  <p class="sub" style="margin-top:8px">Pick any hard-to-guess word, then subscribe to it in the free <b>ntfy</b> app to get a push if a run ever fails. Leave blank for none.</p>
  <label class="f" style="margin-top:16px">Hemisphere <span class="sub">— for “Match the season”</span></label>
  <select id="hemisphere"><option value="north">Northern</option><option value="south">Southern</option></select>
+ <label class="f" style="margin-top:16px">Location <span class="sub">— for “Match today's weather”</span></label>
+ <div class="row">
+   <div><input type="number" step="any" id="latitude" placeholder="latitude" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px"></div>
+   <div><input type="number" step="any" id="longitude" placeholder="longitude" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px"></div>
+ </div>
+ <p class="sub" style="margin-top:8px">Leave blank to auto-detect from your internet connection. Set them for a precise local forecast.</p>
  <label class="f" style="margin-top:16px">Panel password</label>
  <input type="password" id="password" placeholder="leave blank to keep current" autocomplete="new-password" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px">
  <p class="sub" style="margin-top:8px">Requires a login to open this panel. Blank leaves it unchanged; to remove it, clear it in config.json.</p>
@@ -441,6 +458,8 @@ const $ = id => document.getElementById(id);
 const el = {content:$('content'), source:$('source'), all_types:$('all_types'), typegrid:$('typegrid'),
   placard:$('placard'), captionopts:$('captionopts'), qr:$('qr'), tonerow:$('tonerow'),
   seasonal:$('seasonal'), holidays:$('holidays'), subject:$('subject'), hemisphere:$('hemisphere'),
+  weather:$('weather'), on_this_day:$('on_this_day'), googly:$('googly'),
+  latitude:$('latitude'), longitude:$('longitude'),
   ntfy_topic:$('ntfy_topic'), password:$('password'),
   frequency:$('frequency'), time:$('time'), mat:$('mat'), mac:$('mac'), status:$('status'), pv:$('pv'),
   save:$('save'), prev:$('prev'), now:$('now'), historylist:$('historylist'),
@@ -460,6 +479,8 @@ el.time.value=cfg.time; el.mat.value=cfg.mat; el.mac.value=cfg.mac||''; el.qr.ch
 el.source.value=cfg.source||'met'; el.ntfy_topic.value=cfg.ntfy_topic||'';
 el.seasonal.checked=!!cfg.seasonal; el.hemisphere.value=cfg.hemisphere||'north';
 el.holidays.checked=!!cfg.holidays; el.subject.value=cfg.subject||'';
+el.weather.checked=!!cfg.weather; el.on_this_day.checked=!!cfg.on_this_day; el.googly.checked=!!cfg.googly;
+el.latitude.value=(cfg.latitude!=null?cfg.latitude:''); el.longitude.value=(cfg.longitude!=null?cfg.longitude:'');
 el.placard.checked=cfg.placard!==false;
 const tset=new Set(Array.isArray(cfg.tone)?cfg.tone:[cfg.tone||'whimsical']);
 document.querySelectorAll('.tonecheck').forEach(c=>c.checked=tset.has(c.dataset.tone));
@@ -473,6 +494,9 @@ function collect(){return {description:document.querySelector('#description butt
   qr:el.qr.checked, placard:el.placard.checked,
   tone:[...document.querySelectorAll('.tonecheck')].filter(c=>c.checked).map(c=>c.dataset.tone),
   seasonal:el.seasonal.checked, holidays:el.holidays.checked, subject:el.subject.value.trim(),
+  weather:el.weather.checked, on_this_day:el.on_this_day.checked, googly:el.googly.checked,
+  latitude:el.latitude.value.trim()===''?null:parseFloat(el.latitude.value),
+  longitude:el.longitude.value.trim()===''?null:parseFloat(el.longitude.value),
   hemisphere:el.hemisphere.value, ntfy_topic:el.ntfy_topic.value.trim(), password:el.password.value,
   frequency:el.frequency.value, time:el.time.value, mat:el.mat.value,
   mac:el.mac.value.trim(), replace:true};}

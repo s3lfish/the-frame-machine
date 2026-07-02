@@ -4,3 +4,4 @@ requests
 qrcode
 wakeonlan
 flask
+opencv-python-headless<5   # optional: only used for the "googly eyes" effect (face detection); v4 bundles the Haar cascades v5 dropped
