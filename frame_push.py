@@ -99,11 +99,12 @@ def seasonal_terms(hemisphere="north"):
     return SEASON_TERMS[season]
 
 # Date-ranged holiday search bias (month,day) inclusive; last range wraps the year end.
+# The holiday's own name leads the list so a typed subject can combine into e.g. "cats christmas".
 HOLIDAYS = [
-    ((10, 24), (10, 31), ["skeleton", "skull", "witch", "ghost", "death", "devil"]),   # Halloween
-    ((12, 20), (12, 27), ["nativity", "angel", "snow", "adoration of the magi"]),       # Christmas
-    ((2, 10),  (2, 15),  ["lovers", "cupid", "romance", "embrace"]),                    # Valentine's
-    ((12, 30), (1, 2),   ["feast", "celebration", "fireworks"]),                        # New Year
+    ((10, 24), (10, 31), ["halloween", "skeleton", "witch", "ghost", "skull"]),   # Halloween
+    ((12, 20), (12, 27), ["christmas", "nativity", "angel", "snow"]),             # Christmas
+    ((2, 10),  (2, 15),  ["valentine", "lovers", "cupid", "romance"]),            # Valentine's
+    ((12, 30), (1, 2),   ["new year", "feast", "celebration", "fireworks"]),      # New Year
 ]
 def holiday_terms():
     md = (datetime.date.today().month, datetime.date.today().day)
@@ -114,16 +115,15 @@ def holiday_terms():
     return None
 
 def bias_terms(subject="", holidays=False, seasonal=False, hemisphere="north"):
-    """The search terms a special mode wants, in priority order, or None for 'normal'."""
-    if subject and subject.strip():
-        return [subject.strip()]
-    if holidays:
-        h = holiday_terms()
-        if h:
-            return h
-    if seasonal:
-        return seasonal_terms(hemisphere)
-    return None
+    """Search terms a special mode wants, or None for 'normal'. A typed subject COMBINES
+    with an active holiday/season (e.g. 'cats' in December -> 'cats christmas', 'cats snow')."""
+    base = (holiday_terms() if holidays else None) or (seasonal_terms(hemisphere) if seasonal else None)
+    subject = (subject or "").strip()
+    if subject and base:
+        return [f"{subject} {t}" for t in base]
+    if subject:
+        return [subject]
+    return base
 TMP = "/tmp/frame_art"
 # Your Frame's wireless MAC — set it here or via the FRAME_MAC env var / --mac.
 # Find it on the TV: Settings > General/Support > About This TV (or your router).

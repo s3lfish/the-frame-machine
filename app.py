@@ -316,8 +316,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    <option value="cleveland">Cleveland Museum of Art</option>
    <option value="any">Either — a random pick each time</option>
  </select>
- <label class="f" style="margin-top:16px">Only show art of… <span class="sub">— optional, e.g. cats, dogs, dragons (overrides the above)</span></label>
- <input type="text" id="subject" placeholder="anything you like — leave blank for none" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px">
+ <label class="f" style="margin-top:16px">Only show art of… <span class="sub">— optional; combines with season/holidays (e.g. cats at Christmas → Christmas cats)</span></label>
+ <input type="text" id="subject" placeholder="cats, dogs, dragons… — leave blank for none" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px">
  <label class="chk" style="margin-top:14px"><input type="checkbox" id="seasonal">
    <span>Match the season <span class="sub">— bias to snow, blossom, harvest…</span></span></label>
  <label class="chk" style="margin-top:14px"><input type="checkbox" id="holidays">
