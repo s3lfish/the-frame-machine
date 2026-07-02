@@ -9,6 +9,11 @@ made-up story and stamps on a QR code to the real museum page.
 It runs entirely on your own machine (a Mac mini, a Raspberry Pi, any always-on box) and talks
 to the TV directly over its local WebSocket API — no cloud, no account, no subscription.
 
+<p align="center">
+  <img src="docs/panel-desktop.png" alt="The web control panel" width="420">
+</p>
+<p align="center"><em>Everything runs from one phone-friendly web page.</em></p>
+
 ![example placard](docs/example.jpg)
 
 > ⚠️ **A word of warning.** This is vibe-coded by someone who has no idea what they're doing.

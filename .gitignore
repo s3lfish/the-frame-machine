@@ -18,3 +18,6 @@ last_run.txt
 # local dev
 .claude/
 frame_preview.jpg
+
+# local dev context
+CLAUDE.md
