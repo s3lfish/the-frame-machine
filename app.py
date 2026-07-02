@@ -37,7 +37,8 @@ def save_config(updates):
 
 def flags_from(cfg):
     """Turn a settings dict into frame_push.py CLI flags (so preview/now match the page)."""
-    f = ["--theme", cfg["content"], "--mat", cfg["mat"], "--describe", cfg["description"]]
+    f = ["--theme", cfg["content"], "--mat", cfg["mat"], "--describe", cfg["description"],
+         "--source", cfg.get("source", "met"), "--tone", cfg.get("tone", "whimsical")]
     if cfg.get("all_types"):
         f += ["--all-types"]
     else:
@@ -97,7 +98,7 @@ def write_schedule(cfg):
 # ---------- routes ----------
 @app.route("/")
 def index():
-    return render_template_string(PAGE, cfg=fp.load_config(), types=list(fp.TYPE_FILTERS))
+    return render_template_string(PAGE, cfg=fp.load_config(), types=list(fp.TYPE_FILTERS), tones=list(fp.TONES))
 
 @app.route("/save", methods=["POST"])
 def save():
@@ -166,8 +167,10 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    <button data-v="real">Real Met caption</button>
    <button data-v="made-up">Made-up tale</button>
  </div>
+ <div id="tonerow" style="margin-top:14px"><label class="f">Made-up voice</label>
+   <select id="tone">{% for t in tones %}<option value="{{t}}">{{t|capitalize}}</option>{% endfor %}</select></div>
  <label class="chk" style="margin-top:14px"><input type="checkbox" id="qr">
-   <span>Show a QR code <span class="sub">— links to the real Met page for this piece</span></span></label>
+   <span>Show a QR code <span class="sub">— links to the real museum page for this piece</span></span></label>
 </div>
 
 <div class="card">
@@ -180,6 +183,12 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    <option value="old-masters">Old Masters</option>
    <option value="landscape">Landscapes</option>
    <option value="mix">Mixed classics</option>
+ </select>
+ <label class="f" style="margin-top:14px">Source <span class="sub">— which museum</span></label>
+ <select id="source">
+   <option value="met">The Met</option>
+   <option value="cleveland">Cleveland Museum of Art</option>
+   <option value="any">Either — a random pick each time</option>
  </select>
  <label class="chk" style="margin-top:14px"><input type="checkbox" id="all_types">
    <span>All object types <span class="sub">— everything the museum has</span></span></label>
@@ -218,16 +227,21 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  <label class="f" style="margin-top:12px">TV wireless MAC address</label>
  <input type="text" id="mac" placeholder="AA:BB:CC:DD:EE:FF" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px">
  <p class="sub" style="margin-top:8px">Found on the TV under About This TV, or your router. Needed to find and control the Frame.</p>
+ <label class="f" style="margin-top:16px">Phone alerts — ntfy topic</label>
+ <input type="text" id="ntfy_topic" placeholder="e.g. my-frame-alerts-8b3" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px">
+ <p class="sub" style="margin-top:8px">Pick any hard-to-guess word, then subscribe to it in the free <b>ntfy</b> app to get a push if a run ever fails. Leave blank for none.</p>
 </details></div>
 </div>
 
 <script>
 const cfg = {{ cfg|tojson }};
 const $ = id => document.getElementById(id);
-const el = {content:$('content'), all_types:$('all_types'), typegrid:$('typegrid'), qr:$('qr'),
+const el = {content:$('content'), source:$('source'), all_types:$('all_types'), typegrid:$('typegrid'),
+  qr:$('qr'), tone:$('tone'), tonerow:$('tonerow'), ntfy_topic:$('ntfy_topic'),
   frequency:$('frequency'), time:$('time'), mat:$('mat'), mac:$('mac'), status:$('status'), pv:$('pv'),
   save:$('save'), prev:$('prev'), now:$('now')};
-function setSeg(val){document.querySelectorAll('#description button').forEach(b=>b.classList.toggle('on',b.dataset.v===val));}
+function setSeg(val){document.querySelectorAll('#description button').forEach(b=>b.classList.toggle('on',b.dataset.v===val));
+  el.tonerow.style.display = (val==='made-up') ? 'block' : 'none';}
 document.querySelectorAll('#description button').forEach(b=>b.onclick=()=>setSeg(b.dataset.v));
 function syncTypes(){el.typegrid.classList.toggle('hidden', el.all_types.checked);}
 el.all_types.onchange=syncTypes;
@@ -235,13 +249,15 @@ el.all_types.onchange=syncTypes;
 setSeg(cfg.description);
 el.content.value=cfg.content; el.all_types.checked=!!cfg.all_types; el.frequency.value=cfg.frequency;
 el.time.value=cfg.time; el.mat.value=cfg.mat; el.mac.value=cfg.mac||''; el.qr.checked=cfg.qr!==false;
+el.source.value=cfg.source||'met'; el.tone.value=cfg.tone||'whimsical'; el.ntfy_topic.value=cfg.ntfy_topic||'';
 const chosen=new Set(cfg.types||[]);
 document.querySelectorAll('.tcheck').forEach(c=>c.checked=chosen.has(c.dataset.type));
 syncTypes();
 function collect(){return {description:document.querySelector('#description button.on').dataset.v,
-  content:el.content.value, all_types:el.all_types.checked,
+  content:el.content.value, source:el.source.value, all_types:el.all_types.checked,
   types:[...document.querySelectorAll('.tcheck')].filter(c=>c.checked).map(c=>c.dataset.type),
-  qr:el.qr.checked, frequency:el.frequency.value, time:el.time.value, mat:el.mat.value,
+  qr:el.qr.checked, tone:el.tone.value, ntfy_topic:el.ntfy_topic.value.trim(),
+  frequency:el.frequency.value, time:el.time.value, mat:el.mat.value,
   mac:el.mac.value.trim(), placard:true, replace:true};}
 async function post(url,btn,label){el.status.textContent=label+'…';
   const old=btn.textContent; btn.disabled=true;

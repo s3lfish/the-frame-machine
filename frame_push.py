@@ -99,7 +99,10 @@ CONFIG = os.path.join(CFG, "config.json")   # written by the web GUI, read here 
 # Defaults the GUI can override via config.json.
 DEFAULTS = {"mac": "", "ip": None, "description": "made-up", "content": "museum",
             "all_types": True, "types": [], "placard": True, "qr": True, "mat": "charcoal",
-            "fetch": 1, "replace": True, "frequency": "daily", "time": "07:30"}
+            "fetch": 1, "replace": True, "frequency": "daily", "time": "07:30",
+            "ntfy_topic": "", "tone": "whimsical", "source": "met", "orientation": "landscape"}
+STATUS = os.path.join(CFG, "status.json")   # last-run outcome, for alerts + the dashboard
+LAST_PIECES = []                            # meta of pieces prepped this run (for status)
 
 def load_config():
     cfg = dict(DEFAULTS)
@@ -109,6 +112,69 @@ def load_config():
     except Exception as e:
         print(f"  ! config read: {str(e)[:80]}", file=sys.stderr)
     return cfg
+
+def write_status(ok, message, extra=None):
+    """Record the last run's outcome (the dashboard + alerts read this)."""
+    d = {"ok": ok, "when": datetime.datetime.now().isoformat(timespec="seconds"), "message": message}
+    if extra:
+        d.update(extra)
+    try:
+        os.makedirs(CFG, exist_ok=True); json.dump(d, open(STATUS, "w"), indent=2)
+    except Exception:
+        pass
+
+def ntfy_alert(title, message):
+    """Push a phone notification via ntfy.sh if a topic is configured (headless-friendly)."""
+    topic = load_config().get("ntfy_topic")
+    if not topic:
+        return
+    try:
+        requests.post(f"https://ntfy.sh/{topic}", data=message.encode("utf-8"),
+                      headers={"Title": title, "Priority": "high", "Tags": "framed_picture"}, timeout=10)
+    except Exception:
+        pass
+
+# ---------- polite, cached HTTP (avoids hammering / rate-limit 403s) ----------
+CACHE_DIR = os.path.join(CFG, "cache")
+
+def http_get(url, params=None, headers=None, tries=4, timeout=30):
+    """GET with exponential backoff on 403/429/5xx and transient errors. Returns a
+    Response or None."""
+    delay = 1.5
+    for _ in range(tries):
+        try:
+            r = requests.get(url, params=params, headers=headers or HEADERS, timeout=timeout)
+            if r.status_code == 200:
+                return r
+            if r.status_code not in (403, 429, 500, 502, 503, 504):
+                return r
+        except Exception:
+            pass
+        time.sleep(delay); delay *= 2
+    return None
+
+def met_json(url, params=None, timeout=30):
+    r = http_get(url, params=params, timeout=timeout)
+    try:
+        return r.json() if r is not None else {}
+    except Exception:
+        return {}
+
+def met_object(oid):
+    """A single object record, cached on disk forever (records are immutable)."""
+    p = os.path.join(CACHE_DIR, f"obj_{oid}.json")
+    try:
+        if os.path.exists(p):
+            return json.load(open(p))
+    except Exception:
+        pass
+    o = met_json(MET_OBJECT.format(id=oid))
+    if o.get("objectID"):
+        try:
+            os.makedirs(CACHE_DIR, exist_ok=True); json.dump(o, open(p, "w"))
+        except Exception:
+            pass
+    return o
 
 # ---------- locate the TV by MAC (verify reachability, avoid stale ARP) ----------
 def _arp_ip_for_mac(mac):
@@ -215,11 +281,10 @@ def met_prose(object_url):
     (the JSON API doesn't carry it). Returns trimmed prose, or None if there's none."""
     if not object_url:
         return None
-    try:
-        h = requests.get(object_url, headers=BROWSER_HEADERS, timeout=30).text
-    except Exception as e:
-        print(f"  ! prose fetch: {str(e)[:80]}", file=sys.stderr)
+    r = http_get(object_url, headers=BROWSER_HEADERS)
+    if r is None:
         return None
+    h = r.text
     best = ""
     for m in re.finditer(r"read-more-wrapper[^>]*>", h):   # description lives in this block
         end = h.find("</div>", m.end())
@@ -231,10 +296,19 @@ def met_prose(object_url):
             best = inner
     return _truncate_prose(best) if len(best) >= 40 else None
 
-def ai_blurb(meta):
-    """Fallback when the Met has no prose: a deliberately SILLY, invented mini-tale from
-    Claude (its absurdity makes it self-evidently fiction). Dormant unless an Anthropic
-    key is present; never fatal."""
+# Caption "tones" for the made-up tale — one instruction each, chosen in the GUI.
+TONES = {
+    "whimsical":   "a joyfully absurd, tongue-in-cheek tall tale (secret purposes, imagined former owners, unlikely adventures)",
+    "noir":        "a hard-boiled film-noir vignette, all shadows, betrayal and cigarette smoke",
+    "epic":        "a grandiose, mock-heroic legend in the breathless voice of an ancient epic",
+    "haiku":       "exactly two lines of vivid, evocative imagery (haiku-like, no need to count syllables)",
+    "limerick":    "a single cheeky limerick (five lines, AABBA rhyme) — you may exceed two sentences for this one",
+    "conspiracy":  "a paranoid conspiracy theory connecting it to secret societies and cover-ups, delivered deadpan",
+}
+
+def ai_blurb(meta, tone="whimsical"):
+    """Fallback when there's no real prose: a deliberately fake, self-evidently invented
+    mini-tale from Claude in the chosen TONE. Dormant unless an Anthropic key is present."""
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         kf = os.path.join(CFG, "anthropic_key.txt")
@@ -244,17 +318,16 @@ def ai_blurb(meta):
         return None
     facts = ", ".join(f"{k}: {meta[k]}" for k in ("artist", "title", "date", "medium",
              "culture", "objectName") if meta.get(k))
+    style = TONES.get(tone, TONES["whimsical"])
     try:
         r = requests.post("https://api.anthropic.com/v1/messages",
             headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 200,
+            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 220,
                   "messages": [{"role": "user", "content":
-                    "This museum object has no real description, so invent a joyfully absurd, "
-                    "tongue-in-cheek back-story for it — think whimsical tall tale. Make it "
-                    "gleefully fake and creative (secret purposes, imagined former owners, "
-                    "unlikely adventures), while staying warm and PG. Nod to the object's name/"
-                    "date/material, then run wild. Exactly two sentences. Output only the two "
-                    "sentences — no title, heading, markdown, preamble, or disclaimer.\n" + facts}]},
+                    f"This museum object has no real description, so invent one as {style}. "
+                    "Keep it warm and PG, nod to the object's name/date/material, then run wild. "
+                    "Two sentences (unless the style says otherwise). Output only the text — no "
+                    "title, heading, markdown, preamble, or disclaimer.\n" + facts}]},
             timeout=30)
         text = r.json()["content"][0]["text"].strip()
         text = re.sub(r"^\s*#+.*$", "", text, flags=re.M).strip()   # drop any stray heading line
@@ -297,7 +370,7 @@ def mat_with_placard(art, meta, mat_rgb, desc=None, link=None):
             ("Georgia.ttf", 33, dim, meta.get("culture_period"), 6),
             ("Georgia.ttf", 29, dim, meta.get("dimensions"), 40),
             ("Georgia Italic.ttf", 28, dim, meta.get("credit"), 26),
-            ("Georgia.ttf", 26, dim, "The Metropolitan Museum of Art", 0)]
+            ("Georgia.ttf", 26, dim, meta.get("museum") or "The Metropolitan Museum of Art", 0)]
 
     # measure, then vertically centre the whole block
     laid = []
@@ -356,15 +429,16 @@ def all_object_ids():
             return json.load(open(cache))
     except Exception:
         pass
-    ids = requests.get(MET_OBJECTS, headers=HEADERS, timeout=90).json().get("objectIDs") or []
+    ids = met_json(MET_OBJECTS, timeout=90).get("objectIDs") or []
     try:
         json.dump(ids, open(cache, "w"))
     except Exception:
         pass
     return ids
 
-def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None, qr=True):
+def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None, qr=True, tone="whimsical"):
     os.makedirs(TMP, exist_ok=True)
+    LAST_PIECES.clear()
     # Gather candidate object IDs, then pull each object's record and download its
     # public-domain image until we have enough.
     if theme == "museum" and types and not all_types:
@@ -375,12 +449,8 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
         require_artists = None
         oids = []
         for kw in (k for t in types for k in TYPE_FILTERS.get(t, ())):
-            try:
-                hits = requests.get(MET_SEARCH, params={"q": kw, "hasImages": "true"},
-                                    headers=HEADERS, timeout=30).json().get("objectIDs") or []
-                random.shuffle(hits); oids.extend(hits[:80])
-            except Exception as e:
-                print(f"  ! search '{kw}': {e}", file=sys.stderr)
+            hits = met_json(MET_SEARCH, params={"q": kw, "hasImages": "true"}).get("objectIDs") or []
+            random.shuffle(hits); oids.extend(hits[:80])
         random.shuffle(oids)
     elif theme == "museum":
         print("  source: whole collection (surprise me)")
@@ -391,14 +461,9 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
         terms, require_artists = plan_search(query, theme)
         oids = []
         for q in terms:
-            try:
-                r = requests.get(MET_SEARCH, params={"q": q, "hasImages": "true"},
-                                 headers=HEADERS, timeout=30)
-                hits = r.json().get("objectIDs") or []
-                random.shuffle(hits)
-                oids.extend(hits[:60])       # cap per term so one term can't dominate
-            except Exception as e:
-                print(f"  ! search '{q}': {e}", file=sys.stderr)
+            hits = met_json(MET_SEARCH, params={"q": q, "hasImages": "true"}).get("objectIDs") or []
+            random.shuffle(hits)
+            oids.extend(hits[:60])           # cap per term so one term can't dominate
         random.shuffle(oids)
     seen = set()
     paths = []
@@ -409,7 +474,7 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
             continue
         seen.add(oid)
         try:
-            o = requests.get(MET_OBJECT.format(id=oid), headers=HEADERS, timeout=30).json()
+            o = met_object(oid)
             if not o.get("isPublicDomain"):
                 continue
             cls = (o.get("classification") or "").lower()
@@ -437,12 +502,12 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
                 meta = {"title": o.get("title"), "artist": artist_s, "bio": o.get("artistDisplayBio"),
                         "date": o.get("objectDate"), "medium": o.get("medium"), "dimensions": o.get("dimensions"),
                         "culture": culture, "objectName": o.get("objectName"), "culture_period": cp,
-                        "credit": o.get("creditLine")}
+                        "credit": o.get("creditLine"), "museum": "The Metropolitan Museum of Art"}
                 desc = None
                 if describe == "real":
                     desc = met_prose(o.get("objectURL"))          # the Met's own caption (may be None)
                 elif describe == "made-up":
-                    desc = ai_blurb(meta)                          # an invented tale (needs a key)
+                    desc = ai_blurb(meta, tone)                    # an invented tale (needs a key)
                 if desc:
                     print(f"    + {describe}: {desc[:60]}...")
                 link = o.get("objectURL") if (describe != "off" and qr) else None
@@ -450,9 +515,82 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
             else:
                 mat_image(art, mat_rgb).save(p, "JPEG", quality=JPEG_Q)
             paths.append(p)
+            LAST_PIECES.append({"title": o.get("title") or "", "source": o.get("_source_name", "The Met"),
+                                "artist": o.get("artistDisplayName") or o.get("culture") or "Unknown",
+                                "url": o.get("objectURL") or ""})
             print(f"  prepped: {o.get('title','?')} — {o.get('artistDisplayName') or o.get('culture') or 'Unknown'}")
         except Exception as e:
             print(f"  ! skip {oid}: {str(e)[:120]}", file=sys.stderr)
+    return paths
+
+CLE_API = "https://openaccess-api.clevelandart.org/api/artworks/"
+CLE_NAME = "Cleveland Museum of Art"
+
+def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="off", types=None, qr=True, tone="whimsical"):
+    """Second source: Cleveland Museum of Art open access (keyless, CC0). Its API carries
+    a real 'description', so 'real' captions need no scraping."""
+    os.makedirs(TMP, exist_ok=True); LAST_PIECES.clear()
+    params = {"has_image": "1", "cc0": "1", "limit": "100", "indent": "1"}
+    q = query
+    if not q and theme == "cycle":
+        q = random.choice(THEMES[THEME_CYCLE[datetime.date.today().toordinal() % len(THEME_CYCLE)]])
+    elif not q and theme in THEMES and theme != "mix":
+        q = random.choice(THEMES[theme])
+    elif not q and theme == "mix":
+        q = random.choice(TERM_POOL)
+    if q:
+        params["q"] = q; print(f"  cleveland: {q}")
+    else:                                        # museum: jump to a random page
+        total = met_json(CLE_API, params={**params, "limit": "1"}).get("info", {}).get("total", 0)
+        if total > 120:
+            params["skip"] = str(random.randint(0, total - 100))
+        print("  cleveland: whole collection")
+    data = met_json(CLE_API, params=params).get("data") or []
+    random.shuffle(data)
+    paths = []
+    for o in data:
+        if len(paths) >= count:
+            break
+        try:
+            if o.get("share_license_status") != "CC0":
+                continue
+            typ = (o.get("type") or "").lower()
+            if types and not any(k in typ for t in types for k in TYPE_FILTERS.get(t, ())):
+                continue
+            imgs = o.get("images") or {}
+            url = ((imgs.get("print") or imgs.get("web") or {}).get("url"))
+            if not url:
+                continue
+            cr = ((o.get("creators") or [{}])[0].get("description") or "")
+            name, bio = cr, ""
+            if "(" in cr:
+                name, bio = cr.split("(")[0].strip(), cr[cr.find("(") + 1:].rstrip(")").strip()
+            meta = {"title": o.get("title") or "Untitled", "artist": name, "bio": bio,
+                    "date": o.get("creation_date"), "medium": o.get("technique"),
+                    "dimensions": (o.get("measurements") or "").split(";")[0].strip(),
+                    "culture": "; ".join(o.get("culture") or []), "objectName": o.get("type"),
+                    "culture_period": ("; ".join(o.get("culture") or []) if not name else ""),
+                    "credit": o.get("creditline"), "museum": CLE_NAME}
+            r = http_get(url)
+            if r is None:
+                continue
+            art = Image.open(io.BytesIO(r.content)).convert("RGB")
+            desc = None
+            if describe == "real":
+                desc = _truncate_prose(o["description"]) if o.get("description") else None
+            elif describe == "made-up":
+                desc = ai_blurb(meta, tone)
+            if desc:
+                print(f"    + {describe}: {desc[:60]}...")
+            link = o.get("url") if (describe != "off" and qr) else None
+            p = os.path.join(TMP, f"{len(paths)+1:02d}_{slug(meta['title'])}.jpg")
+            (mat_with_placard(art, meta, mat_rgb, desc, link) if placard else mat_image(art, mat_rgb)).save(p, "JPEG", quality=JPEG_Q)
+            paths.append(p)
+            LAST_PIECES.append({"title": meta["title"], "artist": name or meta["culture"] or "Unknown",
+                                "url": o.get("url") or "", "source": CLE_NAME})
+            print(f"  prepped: {meta['title']} — {name or meta['culture'] or 'Unknown'}")
+        except Exception as e:
+            print(f"  ! skip {o.get('id')}: {str(e)[:120]}", file=sys.stderr)
     return paths
 
 def prep_local(files, mat_rgb):
@@ -475,14 +613,26 @@ def notify(msg):
         pass
 
 # ---------- main ----------
+def _gather(args, mat_rgb, count):
+    """Fetch `count` matted images from the chosen source (files / Met / Cleveland / any)."""
+    if args.files:
+        return prep_local(args.files, mat_rgb)
+    src = args.source
+    if src == "any":
+        src = random.choice(["met", "cleveland"])
+    if src == "cleveland":
+        return fetch_cleveland(count, args.query, mat_rgb, args.theme, args.placard,
+                               args.describe, args.types, args.qr, args.tone)
+    return fetch_matted(count, args.query, mat_rgb, args.theme, args.placard, args.all_types,
+                        args.describe, args.types, args.qr, args.tone)
+
 def run(args):
     mat_rgb = MAT_COLORS[args.mat]
 
     # Preview: render one image to a file and stop — never touches the TV.
     if args.preview:
         os.makedirs(CFG, exist_ok=True)
-        paths = (prep_local(args.files, mat_rgb) if args.files else
-                 fetch_matted(1, args.query, mat_rgb, args.theme, args.placard, args.all_types, args.describe, args.types, args.qr))
+        paths = _gather(args, mat_rgb, 1)
         if not paths:
             raise RuntimeError("No image to preview.")
         import shutil
@@ -509,8 +659,7 @@ def run(args):
         print("Art channel is up.")
 
     print("Preparing images...")
-    paths = prep_local(args.files, mat_rgb) if args.files else fetch_matted(
-        args.fetch, args.query, mat_rgb, args.theme, args.placard, args.all_types, args.describe, args.types, args.qr)
+    paths = _gather(args, mat_rgb, args.fetch)
     if not paths:
         raise RuntimeError("No images to upload.")
 
@@ -569,6 +718,9 @@ def run(args):
 
     with open(HEARTBEAT, "w") as f:
         f.write(f"{datetime.datetime.now().isoformat(timespec='seconds')}  ip={ip}  uploaded={len(ids)}  replace={args.replace}\n")
+    piece = LAST_PIECES[0] if LAST_PIECES else {}
+    write_status(True, f"Displayed {piece.get('title','art')}",
+                 {"content_id": ids[0], **piece})
     print(f"\nDone. {len(ids)} uploaded. Heartbeat: {HEARTBEAT}")
 
 def main():
@@ -593,7 +745,11 @@ def main():
     ap.add_argument("--describe", choices=["off", "real", "made-up"], default=cfg["description"],
                     help="caption: off, the Met's real prose, or an invented tale (needs a key)")
     ap.add_argument("--qr", action=argparse.BooleanOptionalAction, default=cfg["qr"],
-                    help="show a QR code linking to the real Met page (when a caption is shown)")
+                    help="show a QR code linking to the real museum page (when a caption is shown)")
+    ap.add_argument("--source", choices=["met", "cleveland", "any"], default=cfg.get("source", "met"),
+                    help="art source: the Met, the Cleveland Museum, or a random pick each run")
+    ap.add_argument("--tone", choices=list(TONES), default=cfg.get("tone", "whimsical"),
+                    help="voice for made-up captions")
     ap.add_argument("--preview", default=None, metavar="PATH",
                     help="render one image to PATH and exit — does not touch the TV")
     ap.add_argument("--mat", choices=MAT_COLORS, default=cfg["mat"])
@@ -611,7 +767,9 @@ def main():
         run(args)
     except Exception as e:
         print(f"FAILED: {e}", file=sys.stderr)
+        write_status(False, str(e)[:300])
         notify(str(e)[:200])
+        ntfy_alert("Frame art failed", str(e)[:300])
         sys.exit(1)
 
 if __name__ == "__main__":
