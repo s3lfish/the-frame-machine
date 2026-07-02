@@ -317,10 +317,12 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <h1>The Frame Machine</h1>
 <p class="muted">Choose what your Frame shows, and when it changes.</p>
 
-<div class="actions" style="margin-bottom:16px">
- <button id="nowtop" style="background:var(--accent);color:#1c1c1e;border-color:var(--accent)">Change the art now</button>
+<div class="actions" style="margin-bottom:10px">
  <button id="back" style="background:#303033;color:var(--ink)">◀ Back</button>
  <button id="fwd" style="background:#303033;color:var(--ink)">Forward ▶</button>
+</div>
+<div class="actions" style="margin-bottom:16px">
+ <button id="nowtop" style="background:var(--accent);color:#1c1c1e;border-color:var(--accent)">Change the art now</button>
 </div>
 
 <div class="card" id="nowcard">
