@@ -89,6 +89,11 @@ and starts the control panel as a background service. When it finishes it prints
 it on your phone or laptop, click **Change the art now** (accept the one-time "Allow" prompt on
 the TV), pick how often it should change, and hit **Save**. Done.
 
+> **Where it lives:** put the project folder wherever you want it to permanently live *before*
+> running the installer — it wires the background service to that folder. Your settings and
+> history live in `~/.config/frame` regardless, so they survive. If you move the folder later,
+> just re-run `./install.sh` to repoint everything.
+
 <details><summary>Prefer git?</summary>
 
 ```bash
