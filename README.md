@@ -61,16 +61,29 @@ to the genuine museum page.
 
 ## Install (the easy way)
 
+**Step 1 — download it:** click **[⬇ Download The Frame Machine (ZIP)](https://github.com/s3lfish/the-frame-machine/archive/refs/heads/main.zip)**.
+(That's the same as the green **Code ▾** button near the top of this page → **Download ZIP**.)
+Double-click the downloaded file to unzip it.
+
+**Step 2 — run the installer:** open **Terminal** (macOS: Applications → Utilities → Terminal),
+then paste this and press Return:
+
 ```bash
-git clone https://github.com/s3lfish/the-frame-machine
-cd the-frame-machine
-./install.sh
+cd ~/Downloads/the-frame-machine-main && bash install.sh
 ```
 
 The script installs everything, asks for your TV's MAC address (it tells you where to find it),
 and starts the control panel as a background service. When it finishes it prints a link — open
 it on your phone or laptop, click **Change the art now** (accept the one-time "Allow" prompt on
 the TV), pick how often it should change, and hit **Save**. Done.
+
+<details><summary>Prefer git?</summary>
+
+```bash
+git clone https://github.com/s3lfish/the-frame-machine
+cd the-frame-machine && ./install.sh
+```
+</details>
 
 > On **Linux/Raspberry Pi** you can instead use Docker — see [Docker](#docker-linux--raspberry-pi) below.
 
