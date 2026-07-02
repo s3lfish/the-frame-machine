@@ -38,7 +38,12 @@ def save_config(updates):
 def flags_from(cfg):
     """Turn a settings dict into frame_push.py CLI flags (so preview/now match the page)."""
     f = ["--theme", cfg["content"], "--mat", cfg["mat"], "--describe", cfg["description"]]
-    f += ["--all-types"] if cfg.get("all_types") else ["--no-all-types"]
+    if cfg.get("all_types"):
+        f += ["--all-types"]
+    else:
+        f += ["--no-all-types"]
+        if cfg.get("types"):
+            f += ["--types", ",".join(cfg["types"])]
     f += ["--placard"] if cfg.get("placard", True) else ["--no-placard"]
     f += ["--replace"] if cfg.get("replace", True) else ["--no-replace"]
     f += ["--fetch", str(cfg.get("fetch", 1))]
@@ -91,7 +96,7 @@ def write_schedule(cfg):
 # ---------- routes ----------
 @app.route("/")
 def index():
-    return render_template_string(PAGE, cfg=fp.load_config())
+    return render_template_string(PAGE, cfg=fp.load_config(), types=list(fp.TYPE_FILTERS))
 
 @app.route("/save", methods=["POST"])
 def save():
@@ -139,6 +144,9 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    border-radius:10px;padding:10px;font-size:15px}
  .row{display:flex;gap:14px;flex-wrap:wrap} .row>div{flex:1;min-width:160px}
  .chk{display:flex;align-items:center;gap:10px;cursor:pointer} .chk input{width:20px;height:20px}
+ .typegrid{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin-top:12px;
+   padding-top:12px;border-top:1px solid var(--line)} .typegrid.hidden{display:none}
+ .tk input{width:18px;height:18px} .tk span{font-size:14px}
  .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:4px}
  .actions button{flex:1;min-width:130px;border-radius:10px;padding:13px;font-size:15px;font-weight:600;cursor:pointer;border:1px solid var(--line)}
  #save{background:#303033;color:var(--ink)} #prev{background:#303033;color:var(--ink)}
@@ -171,7 +179,10 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    <option value="mix">Mixed classics</option>
  </select>
  <label class="chk" style="margin-top:14px"><input type="checkbox" id="all_types">
-   <span>Include all object types <span class="sub">(sculpture, ceramics, armour…)</span></span></label>
+   <span>All object types <span class="sub">— everything the museum has</span></span></label>
+ <div id="typegrid" class="typegrid">
+   {% for t in types %}<label class="chk tk"><input type="checkbox" class="tcheck" data-type="{{t}}"><span>{{t}}</span></label>{% endfor %}
+ </div>
 </div>
 
 <div class="card">
@@ -210,18 +221,25 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <script>
 const cfg = {{ cfg|tojson }};
 const $ = id => document.getElementById(id);
-const el = {content:$('content'), all_types:$('all_types'), frequency:$('frequency'),
+const el = {content:$('content'), all_types:$('all_types'), typegrid:$('typegrid'), frequency:$('frequency'),
   time:$('time'), mat:$('mat'), mac:$('mac'), status:$('status'), pv:$('pv'),
   save:$('save'), prev:$('prev'), now:$('now')};
 function setSeg(val){document.querySelectorAll('#description button').forEach(b=>b.classList.toggle('on',b.dataset.v===val));}
 document.querySelectorAll('#description button').forEach(b=>b.onclick=()=>setSeg(b.dataset.v));
+function syncTypes(){el.typegrid.classList.toggle('hidden', el.all_types.checked);}
+el.all_types.onchange=syncTypes;
 // hydrate from config
 setSeg(cfg.description);
 el.content.value=cfg.content; el.all_types.checked=!!cfg.all_types; el.frequency.value=cfg.frequency;
 el.time.value=cfg.time; el.mat.value=cfg.mat; el.mac.value=cfg.mac||'';
+const chosen=new Set(cfg.types||[]);
+document.querySelectorAll('.tcheck').forEach(c=>c.checked=chosen.has(c.dataset.type));
+syncTypes();
 function collect(){return {description:document.querySelector('#description button.on').dataset.v,
-  content:el.content.value, all_types:el.all_types.checked, frequency:el.frequency.value,
-  time:el.time.value, mat:el.mat.value, mac:el.mac.value.trim(), placard:true, replace:true};}
+  content:el.content.value, all_types:el.all_types.checked,
+  types:[...document.querySelectorAll('.tcheck')].filter(c=>c.checked).map(c=>c.dataset.type),
+  frequency:el.frequency.value, time:el.time.value, mat:el.mat.value, mac:el.mac.value.trim(),
+  placard:true, replace:true};}
 async function post(url,btn,label){el.status.textContent=label+'…';
   const old=btn.textContent; btn.disabled=true;
   try{const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(collect())});

@@ -100,8 +100,9 @@ python3 app.py --port 8080     # then open http://<this-machine>.local:8080
 ```
 
 It offers **Caption** (None / Real Met caption / Made-up tale), **Content** (whole museum, the
-daily genre cycle, or a single genre), **all-object-types** toggle, **mat colour**, and **how
-often / when** the art changes — plus **Preview** and **Change the art now**. It writes
+daily genre cycle, or a single genre), **object types** (tick "All", or uncheck it to choose
+specific families — Paintings, Prints, Sculpture, Ceramics, Photographs, Glass, …), **mat
+colour**, and **how often / when** the art changes — plus **Preview** and **Change the art now**. It writes
 `~/.config/frame/config.json` (which `frame_push.py` reads for its defaults) and, on macOS,
 creates and reloads the daily launchd schedule for you from the frequency/time you pick.
 

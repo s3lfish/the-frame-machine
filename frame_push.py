@@ -45,8 +45,24 @@ BROWSER_HEADERS = {
     "Referer": "https://www.metmuseum.org/art/collection",
     "Upgrade-Insecure-Requests": "1",
 }
-# Keep wall-hangable art only — the Met returns sculpture/ceramics/furniture too.
+# Default "wall art" filter (used when no specific types are chosen and all_types is off).
 CLASS_OK = ("painting", "print", "drawing", "woodblock", "watercolor", "pastel")
+# Selectable object-type families -> classification keywords matched against the Met
+# object's classification. The GUI shows one checkbox per label; --types picks a subset.
+TYPE_FILTERS = {
+    "Paintings":    ("painting",),
+    "Prints":       ("print", "woodblock"),
+    "Drawings":     ("drawing", "watercolor", "pastel"),
+    "Photographs":  ("photograph",),
+    "Sculpture":    ("sculpture",),
+    "Ceramics":     ("ceramic", "porcelain"),
+    "Glass":        ("glass",),
+    "Metalwork":    ("metal",),
+    "Textiles":     ("textile",),
+    "Furniture":    ("furniture", "woodwork"),
+    "Jewelry":      ("jewel",),
+    "Arms & Armor": ("arms", "armor"),
+}
 MAT_COLORS = {"off_white": (242,240,234), "linen": (228,222,210), "charcoal": (38,38,40), "black": (12,12,12)}
 TERM_POOL = ["Monet","van Gogh","Cezanne","Caillebotte","Seurat","Renoir","Pissarro","Sisley",
              "Degas","Manet","Gauguin","Cassatt","Morisot","Whistler","Homer","Turner","Constable",
@@ -82,7 +98,7 @@ CONFIG = os.path.join(CFG, "config.json")   # written by the web GUI, read here 
 
 # Defaults the GUI can override via config.json.
 DEFAULTS = {"mac": "", "ip": None, "description": "made-up", "content": "museum",
-            "all_types": True, "placard": True, "mat": "charcoal",
+            "all_types": True, "types": [], "placard": True, "mat": "charcoal",
             "fetch": 1, "replace": True, "frequency": "daily", "time": "07:30"}
 
 def load_config():
@@ -347,14 +363,28 @@ def all_object_ids():
         pass
     return ids
 
-def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off"):
+def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None):
     os.makedirs(TMP, exist_ok=True)
     # Gather candidate object IDs, then pull each object's record and download its
     # public-domain image until we have enough.
-    if theme == "museum":
-        print("  source: whole collection (surprise me)")
-        all_types = True                     # a genre lock would defeat the point
+    if theme == "museum" and types and not all_types:
+        # Targeted: search the collection for the chosen type families (dense pool,
+        # far fewer fetches than random-sampling 500k ids). The per-object
+        # classification check below still confirms each hit really is that type.
+        print(f"  source: whole collection, types: {', '.join(types)}")
         require_artists = None
+        oids = []
+        for kw in (k for t in types for k in TYPE_FILTERS.get(t, ())):
+            try:
+                hits = requests.get(MET_SEARCH, params={"q": kw, "hasImages": "true"},
+                                    headers=HEADERS, timeout=30).json().get("objectIDs") or []
+                random.shuffle(hits); oids.extend(hits[:80])
+            except Exception as e:
+                print(f"  ! search '{kw}': {e}", file=sys.stderr)
+        random.shuffle(oids)
+    elif theme == "museum":
+        print("  source: whole collection (surprise me)")
+        require_artists = None               # no artist lock — but the type filter still applies
         pool = all_object_ids()
         oids = random.sample(pool, min(600, len(pool))) if pool else []
     else:
@@ -383,8 +413,13 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
             if not o.get("isPublicDomain"):
                 continue
             cls = (o.get("classification") or "").lower()
-            if not all_types and not any(k in cls for k in CLASS_OK):
-                continue
+            if not all_types:
+                if types:
+                    allowed = tuple(k for t in types for k in TYPE_FILTERS.get(t, ()))
+                else:
+                    allowed = CLASS_OK
+                if not any(k in cls for k in allowed):
+                    continue
             if require_artists:
                 artist = (o.get("artistDisplayName") or "").lower()
                 if not any(a in artist for a in require_artists):
@@ -447,7 +482,7 @@ def run(args):
     if args.preview:
         os.makedirs(CFG, exist_ok=True)
         paths = (prep_local(args.files, mat_rgb) if args.files else
-                 fetch_matted(1, args.query, mat_rgb, args.theme, args.placard, args.all_types, args.describe))
+                 fetch_matted(1, args.query, mat_rgb, args.theme, args.placard, args.all_types, args.describe, args.types))
         if not paths:
             raise RuntimeError("No image to preview.")
         import shutil
@@ -475,7 +510,7 @@ def run(args):
 
     print("Preparing images...")
     paths = prep_local(args.files, mat_rgb) if args.files else fetch_matted(
-        args.fetch, args.query, mat_rgb, args.theme, args.placard, args.all_types, args.describe)
+        args.fetch, args.query, mat_rgb, args.theme, args.placard, args.all_types, args.describe, args.types)
     if not paths:
         raise RuntimeError("No images to upload.")
 
@@ -552,6 +587,9 @@ def main():
                     help="compose artwork + a gallery-label caption panel (title/artist/details)")
     ap.add_argument("--all-types", action=argparse.BooleanOptionalAction, default=cfg["all_types"],
                     help="allow every object type (sculpture, photos, ceramics...), not just wall art")
+    ap.add_argument("--types", default=cfg.get("types") or [],
+                    type=lambda s: [x.strip() for x in s.split(",") if x.strip()],
+                    help="with --no-all-types, comma-separated families to allow, e.g. 'Paintings,Prints'")
     ap.add_argument("--describe", choices=["off", "real", "made-up"], default=cfg["description"],
                     help="caption: off, the Met's real prose, or an invented tale (needs a key)")
     ap.add_argument("--preview", default=None, metavar="PATH",
