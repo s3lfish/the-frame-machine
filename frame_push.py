@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-frame_push.py — push art to a Samsung The Frame over the local WebSocket API.
+frame_push.py — fetch free public-domain art and push it to a Samsung The Frame.
 
-Self-locating (finds the TV by MAC), token-persistent, heartbeat + macOS failure
-notification. Wakes the Frame (Wake-on-LAN) and waits for the art channel to respond
-before doing anything, with a hard timeout so it can never hang. With --replace it
-deletes the batch it added last run before adding a fresh one, so a daily job rotates.
+Finds the TV by MAC (DHCP-proof), wakes it (Wake-on-LAN), and uploads one fresh piece,
+optionally matted with a museum-style label + caption. Reads ~/.config/frame/config.json
+for its defaults (written by the web panel, app.py); any flag below overrides it.
 
 Examples:
-    python3 frame_push.py                                   # 1 piece, proof
-    python3 frame_push.py --fetch 12 --mat charcoal --slideshow 30 --replace
-    python3 frame_push.py --fetch 12 --query Hiroshige      # themed batch
+    python3 frame_push.py                                          # uses config.json
+    python3 frame_push.py --theme museum --describe made-up        # a random piece + a tall tale
+    python3 frame_push.py --source cleveland --subject cats        # Cleveland, cats only
+    python3 frame_push.py --preview /tmp/out.jpg --no-placard      # render only, don't touch the TV
 """
 
 import argparse, io, os, re, json, random, subprocess, sys, time, warnings, datetime, html, platform
@@ -510,6 +510,20 @@ def mat_with_placard(art, meta, mat_rgb, desc=None, link=None):
             print(f"  ! qr: {str(e)[:80]}", file=sys.stderr)
     return canvas
 
+def _render_piece(art, meta, mat_rgb, path, placard, describe, qr, tone, page_url, real_text=None, scrape=False):
+    """Render one artwork to `path`: plain art, or a placard with an optional caption + QR.
+    'real' captions come from `real_text` (Cleveland) or by scraping the Met page (scrape=True)."""
+    desc = None
+    if placard and describe == "real":
+        desc = _truncate_prose(real_text) if real_text else (met_prose(page_url) if scrape else None)
+    elif placard and describe == "made-up":
+        desc = ai_blurb(meta, tone)
+    if desc:
+        print(f"    + {describe}: {desc[:60]}...")
+    link = page_url if (placard and describe != "off" and qr) else None
+    canvas = mat_with_placard(art, meta, mat_rgb, desc, link) if placard else mat_image(art, mat_rgb)
+    canvas.save(path, "JPEG", quality=JPEG_Q)
+
 def plan_search(query, theme):
     """Return (terms_to_search, required_artists). required_artists is a lowercased
     list the fetched object's artist must match (None = no artist filtering)."""
@@ -606,31 +620,20 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
                 artist = (o.get("artistDisplayName") or "").lower()
                 if not any(a in artist for a in require_artists):
                     continue
-            url = o.get("primaryImage") or ""
-            if not url:
+            img_url = o.get("primaryImage") or ""
+            if not img_url:
                 continue
-            img = requests.get(url, headers=HEADERS, timeout=60)
+            img = requests.get(img_url, headers=HEADERS, timeout=60)
             img.raise_for_status()
             art = Image.open(io.BytesIO(img.content)).convert("RGB")
+            artist_s, culture, period = (o.get("artistDisplayName") or ""), (o.get("culture") or ""), (o.get("period") or "")
+            cp = " · ".join(x for x in [culture, period] if x.strip()) if artist_s else period.strip()
+            meta = {"title": o.get("title"), "artist": artist_s, "bio": o.get("artistDisplayBio"),
+                    "date": o.get("objectDate"), "medium": o.get("medium"), "dimensions": o.get("dimensions"),
+                    "culture": culture, "objectName": o.get("objectName"), "culture_period": cp,
+                    "credit": o.get("creditLine"), "museum": "The Metropolitan Museum of Art"}
             p = os.path.join(TMP, f"{len(paths)+1:02d}_{slug(o.get('title','art'))}.jpg")
-            if placard:
-                artist_s, culture, period = (o.get("artistDisplayName") or ""), (o.get("culture") or ""), (o.get("period") or "")
-                cp = " · ".join(x for x in [culture, period] if x.strip()) if artist_s else period.strip()
-                meta = {"title": o.get("title"), "artist": artist_s, "bio": o.get("artistDisplayBio"),
-                        "date": o.get("objectDate"), "medium": o.get("medium"), "dimensions": o.get("dimensions"),
-                        "culture": culture, "objectName": o.get("objectName"), "culture_period": cp,
-                        "credit": o.get("creditLine"), "museum": "The Metropolitan Museum of Art"}
-                desc = None
-                if describe == "real":
-                    desc = met_prose(o.get("objectURL"))          # the Met's own caption (may be None)
-                elif describe == "made-up":
-                    desc = ai_blurb(meta, tone)                    # an invented tale (needs a key)
-                if desc:
-                    print(f"    + {describe}: {desc[:60]}...")
-                link = o.get("objectURL") if (describe != "off" and qr) else None
-                mat_with_placard(art, meta, mat_rgb, desc, link).save(p, "JPEG", quality=JPEG_Q)
-            else:
-                mat_image(art, mat_rgb).save(p, "JPEG", quality=JPEG_Q)
+            _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("objectURL"), scrape=True)
             paths.append(p)
             LAST_PIECES.append({"title": o.get("title") or "", "source": o.get("_source_name", "The Met"),
                                 "artist": o.get("artistDisplayName") or o.get("culture") or "Unknown",
@@ -681,8 +684,8 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
                 if not any(k in typ for k in allowed):
                     continue
             imgs = o.get("images") or {}
-            url = ((imgs.get("print") or imgs.get("web") or {}).get("url"))
-            if not url:
+            img_url = (imgs.get("print") or imgs.get("web") or {}).get("url")
+            if not img_url:
                 continue
             cr = ((o.get("creators") or [{}])[0].get("description") or "")
             name, bio = cr, ""
@@ -694,20 +697,12 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
                     "culture": "; ".join(o.get("culture") or []), "objectName": o.get("type"),
                     "culture_period": ("; ".join(o.get("culture") or []) if not name else ""),
                     "credit": o.get("creditline"), "museum": CLE_NAME}
-            r = http_get(url)
+            r = http_get(img_url)
             if r is None:
                 continue
             art = Image.open(io.BytesIO(r.content)).convert("RGB")
-            desc = None
-            if placard and describe == "real":
-                desc = _truncate_prose(o["description"]) if o.get("description") else None
-            elif placard and describe == "made-up":
-                desc = ai_blurb(meta, tone)
-            if desc:
-                print(f"    + {describe}: {desc[:60]}...")
-            link = o.get("url") if (placard and describe != "off" and qr) else None
             p = os.path.join(TMP, f"{len(paths)+1:02d}_{slug(meta['title'])}.jpg")
-            (mat_with_placard(art, meta, mat_rgb, desc, link) if placard else mat_image(art, mat_rgb)).save(p, "JPEG", quality=JPEG_Q)
+            _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("url"), real_text=o.get("description"))
             paths.append(p)
             LAST_PIECES.append({"title": meta["title"], "artist": name or meta["culture"] or "Unknown",
                                 "url": o.get("url") or "", "source": CLE_NAME, "id": f"cle:{o.get('id')}"})
@@ -757,18 +752,20 @@ def _fetch_source(args, mat_rgb, count):
                         args.describe, args.types, args.qr, args.tone, avoid, args.seasonal,
                         args.hemisphere, args.subject, args.holidays)
 
+FAV_CHANCE = 0.2   # chance a scheduled run re-shows a favourite instead of fresh art
+
 def _gather(args, mat_rgb, count):
     """Fetch `count` matted images (files / Met / Cleveland / any), with favourites mixed in
-    and used as a graceful fallback if fresh art can't be fetched."""
+    and used as a graceful fallback if fresh art can't be fetched. Preview and an explicit
+    'change now' (--force) always fetch fresh; only automatic runs re-show favourites."""
     if args.files:
         return prep_local(args.files, mat_rgb)
-    # favourites get a ~1-in-5 chance of reappearing
-    if random.random() < 0.2:
+    if not args.preview and not args.force and random.random() < FAV_CHANCE:
         fav = favourite_pick()
         if fav:
             print("  ★ reshowing a favourite"); return [fav]
     paths = _fetch_source(args, mat_rgb, count)
-    if not paths:                              # couldn't get new art -> fall back to a favourite
+    if not paths and not args.preview:         # couldn't get new art -> fall back to a favourite
         fav = favourite_pick()
         if fav:
             print("  ★ no fresh art — reshowing a favourite"); return [fav]
