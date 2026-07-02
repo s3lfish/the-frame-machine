@@ -100,9 +100,25 @@ CONFIG = os.path.join(CFG, "config.json")   # written by the web GUI, read here 
 DEFAULTS = {"mac": "", "ip": None, "description": "made-up", "content": "museum",
             "all_types": True, "types": [], "placard": True, "qr": True, "mat": "charcoal",
             "fetch": 1, "replace": True, "frequency": "daily", "time": "07:30",
-            "ntfy_topic": "", "tone": "whimsical", "source": "met", "orientation": "landscape"}
+            "ntfy_topic": "", "tone": "whimsical", "source": "met", "orientation": "landscape",
+            "pinned": False}
 STATUS = os.path.join(CFG, "status.json")   # last-run outcome, for alerts + the dashboard
+HISTORY = os.path.join(CFG, "history.json") # recently displayed pieces (for no-repeats + dashboard)
+BLOCKLIST = os.path.join(CFG, "blocklist.json")  # ids the user has banned
+CURRENT_IMG = os.path.join(CFG, "current.jpg")   # a copy of what's on the TV now (dashboard thumb)
 LAST_PIECES = []                            # meta of pieces prepped this run (for status)
+
+def _load_list(path):
+    try:
+        return json.load(open(path)) if os.path.exists(path) else []
+    except Exception:
+        return []
+
+def _save_list(path, data):
+    try:
+        os.makedirs(CFG, exist_ok=True); json.dump(data, open(path, "w"))
+    except Exception:
+        pass
 
 def load_config():
     cfg = dict(DEFAULTS)
@@ -436,9 +452,10 @@ def all_object_ids():
         pass
     return ids
 
-def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None, qr=True, tone="whimsical"):
+def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None):
     os.makedirs(TMP, exist_ok=True)
     LAST_PIECES.clear()
+    avoid = avoid or set()
     # Gather candidate object IDs, then pull each object's record and download its
     # public-domain image until we have enough.
     if theme == "museum" and types and not all_types:
@@ -470,7 +487,7 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
     for oid in oids:
         if len(paths) >= count:
             break
-        if oid in seen:
+        if oid in seen or f"met:{oid}" in avoid:
             continue
         seen.add(oid)
         try:
@@ -517,7 +534,7 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
             paths.append(p)
             LAST_PIECES.append({"title": o.get("title") or "", "source": o.get("_source_name", "The Met"),
                                 "artist": o.get("artistDisplayName") or o.get("culture") or "Unknown",
-                                "url": o.get("objectURL") or ""})
+                                "url": o.get("objectURL") or "", "id": f"met:{o.get('objectID')}"})
             print(f"  prepped: {o.get('title','?')} — {o.get('artistDisplayName') or o.get('culture') or 'Unknown'}")
         except Exception as e:
             print(f"  ! skip {oid}: {str(e)[:120]}", file=sys.stderr)
@@ -526,10 +543,11 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
 CLE_API = "https://openaccess-api.clevelandart.org/api/artworks/"
 CLE_NAME = "Cleveland Museum of Art"
 
-def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="off", types=None, qr=True, tone="whimsical"):
+def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None):
     """Second source: Cleveland Museum of Art open access (keyless, CC0). Its API carries
     a real 'description', so 'real' captions need no scraping."""
     os.makedirs(TMP, exist_ok=True); LAST_PIECES.clear()
+    avoid = avoid or set()
     params = {"has_image": "1", "cc0": "1", "limit": "100", "indent": "1"}
     q = query
     if not q and theme == "cycle":
@@ -552,7 +570,7 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
         if len(paths) >= count:
             break
         try:
-            if o.get("share_license_status") != "CC0":
+            if o.get("share_license_status") != "CC0" or f"cle:{o.get('id')}" in avoid:
                 continue
             typ = (o.get("type") or "").lower()
             if types and not any(k in typ for t in types for k in TYPE_FILTERS.get(t, ())):
@@ -587,7 +605,7 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
             (mat_with_placard(art, meta, mat_rgb, desc, link) if placard else mat_image(art, mat_rgb)).save(p, "JPEG", quality=JPEG_Q)
             paths.append(p)
             LAST_PIECES.append({"title": meta["title"], "artist": name or meta["culture"] or "Unknown",
-                                "url": o.get("url") or "", "source": CLE_NAME})
+                                "url": o.get("url") or "", "source": CLE_NAME, "id": f"cle:{o.get('id')}"})
             print(f"  prepped: {meta['title']} — {name or meta['culture'] or 'Unknown'}")
         except Exception as e:
             print(f"  ! skip {o.get('id')}: {str(e)[:120]}", file=sys.stderr)
@@ -617,14 +635,15 @@ def _gather(args, mat_rgb, count):
     """Fetch `count` matted images from the chosen source (files / Met / Cleveland / any)."""
     if args.files:
         return prep_local(args.files, mat_rgb)
+    avoid = {str(x) for x in _load_list(BLOCKLIST)} | {str(h.get("id")) for h in _load_list(HISTORY)[-40:]}
     src = args.source
     if src == "any":
         src = random.choice(["met", "cleveland"])
     if src == "cleveland":
         return fetch_cleveland(count, args.query, mat_rgb, args.theme, args.placard,
-                               args.describe, args.types, args.qr, args.tone)
+                               args.describe, args.types, args.qr, args.tone, avoid)
     return fetch_matted(count, args.query, mat_rgb, args.theme, args.placard, args.all_types,
-                        args.describe, args.types, args.qr, args.tone)
+                        args.describe, args.types, args.qr, args.tone, avoid)
 
 def run(args):
     mat_rgb = MAT_COLORS[args.mat]
@@ -640,6 +659,10 @@ def run(args):
         print(f"Preview written: {args.preview}")
         return
 
+    if load_config().get("pinned") and not args.force and not args.files:
+        print("Pinned — leaving the current art in place.")
+        write_status(True, "Pinned — art left unchanged", LAST_PIECES[0] if LAST_PIECES else {})
+        return
     if not args.mac:
         raise RuntimeError("No TV MAC set. Pass --mac AA:BB:CC:DD:EE:FF, or set FRAME_MAC in "
                            "the environment. Find it on the Frame under About This TV, or your router.")
@@ -721,6 +744,13 @@ def run(args):
     piece = LAST_PIECES[0] if LAST_PIECES else {}
     write_status(True, f"Displayed {piece.get('title','art')}",
                  {"content_id": ids[0], **piece})
+    hist = _load_list(HISTORY)
+    hist.append({**piece, "content_id": ids[0], "when": datetime.datetime.now().isoformat(timespec="seconds")})
+    _save_list(HISTORY, hist[-200:])
+    try:
+        import shutil; shutil.copy(paths[0], CURRENT_IMG)
+    except Exception:
+        pass
     print(f"\nDone. {len(ids)} uploaded. Heartbeat: {HEARTBEAT}")
 
 def main():
@@ -752,6 +782,7 @@ def main():
                     help="voice for made-up captions")
     ap.add_argument("--preview", default=None, metavar="PATH",
                     help="render one image to PATH and exit — does not touch the TV")
+    ap.add_argument("--force", action="store_true", help="change the art even if pinned")
     ap.add_argument("--mat", choices=MAT_COLORS, default=cfg["mat"])
     ap.add_argument("--files", nargs="*")
     ap.add_argument("--no-select", action="store_true")

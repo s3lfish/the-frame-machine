@@ -12,7 +12,8 @@ you pick. Run it with:  python3 app.py   (add --port 8080 to change the port)
 """
 
 import argparse, json, os, platform, subprocess, sys, tempfile, time
-from flask import Flask, request, jsonify, send_file, render_template_string
+import secrets
+from flask import Flask, request, jsonify, send_file, render_template_string, session, redirect
 
 import frame_push as fp   # reuse CONFIG path, DEFAULTS, load_config
 
@@ -25,6 +26,46 @@ PLIST = os.path.expanduser(f"~/Library/LaunchAgents/{LABEL}.plist")
 LOG = os.path.expanduser("~/Library/Logs/frameart.log")
 
 app = Flask(__name__)
+
+# stable secret for signed session cookies (generated once, stored locally)
+_SK = os.path.join(fp.CFG, "secret_key.txt")
+try:
+    app.secret_key = open(_SK).read().strip() if os.path.exists(_SK) else None
+    if not app.secret_key:
+        app.secret_key = secrets.token_hex(16)
+        os.makedirs(fp.CFG, exist_ok=True); open(_SK, "w").write(app.secret_key)
+except Exception:
+    app.secret_key = "frame-machine-dev-key"
+
+LOGIN = """<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
+<body style="background:#1c1c1e;color:#ece9e2;font:16px -apple-system,sans-serif;display:flex;
+min-height:90vh;align-items:center;justify-content:center">
+<form method=post style="background:#262629;border:1px solid #3a3a3d;border-radius:14px;padding:28px;width:300px">
+<h2 style="margin:0 0 14px">The Frame Machine</h2>
+{% if error %}<p style="color:#e0704a">Wrong password.</p>{% endif %}
+<input name=password type=password placeholder=Password autofocus
+ style="width:100%;padding:11px;border-radius:10px;border:1px solid #3a3a3d;background:#303033;color:#ece9e2">
+<button style="width:100%;margin-top:12px;padding:12px;border-radius:10px;border:0;background:#c9a24a;font-weight:600">Enter</button>
+</form></body>"""
+
+@app.before_request
+def _auth():
+    pw = fp.load_config().get("password") or ""
+    if not pw or request.path == "/login" or session.get("auth"):
+        return
+    if request.method == "GET":
+        return redirect("/login")
+    return ("", 401)
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    pw = fp.load_config().get("password") or ""
+    if request.method == "POST":
+        if request.form.get("password") == pw:
+            session["auth"] = True
+            return redirect("/")
+        return render_template_string(LOGIN, error=True)
+    return render_template_string(LOGIN, error=False)
 
 # ---------- config helpers ----------
 def save_config(updates):
@@ -98,11 +139,15 @@ def write_schedule(cfg):
 # ---------- routes ----------
 @app.route("/")
 def index():
-    return render_template_string(PAGE, cfg=fp.load_config(), types=list(fp.TYPE_FILTERS), tones=list(fp.TONES))
+    cfg = fp.load_config(); cfg.pop("password", None)   # never expose the password in the page
+    return render_template_string(PAGE, cfg=cfg, types=list(fp.TYPE_FILTERS), tones=list(fp.TONES))
 
 @app.route("/save", methods=["POST"])
 def save():
-    cfg = save_config(request.get_json(force=True))
+    updates = request.get_json(force=True)
+    if not updates.get("password"):        # blank field = leave the password unchanged
+        updates.pop("password", None)
+    cfg = save_config(updates)
     return jsonify(ok=True, message=write_schedule(cfg))
 
 @app.route("/preview", methods=["POST"])
@@ -121,12 +166,52 @@ def preview_jpg():
 @app.route("/change-now", methods=["POST"])
 def change_now():
     cfg = {**fp.load_config(), **request.get_json(force=True)}
-    cmd = [PYTHON, SCRIPT] + flags_from(cfg)
+    cmd = [PYTHON, SCRIPT, "--force"] + flags_from(cfg)
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     tail = (r.stdout or "").strip().splitlines()[-3:]
     if r.returncode == 0:
         return jsonify(ok=True, message="Done — " + " / ".join(tail))
     return jsonify(ok=False, message=(r.stderr or r.stdout or "failed").strip()[-300:])
+
+def _read_status():
+    try:
+        return json.load(open(fp.STATUS))
+    except Exception:
+        return {}
+
+@app.route("/state")
+def state():
+    cfg = fp.load_config()
+    return jsonify(status=_read_status(), pinned=bool(cfg.get("pinned")),
+                   has_image=os.path.exists(fp.CURRENT_IMG),
+                   history=fp._load_list(fp.HISTORY)[-8:][::-1])
+
+@app.route("/current.jpg")
+def current_jpg():
+    if os.path.exists(fp.CURRENT_IMG):
+        return send_file(fp.CURRENT_IMG, mimetype="image/jpeg")
+    return ("", 404)
+
+@app.route("/pin", methods=["POST"])
+def pin():
+    newv = not fp.load_config().get("pinned")
+    save_config({"pinned": newv})
+    return jsonify(ok=True, pinned=newv,
+                   message="Pinned — the art will stay put until you unpin." if newv
+                           else "Unpinned — it'll change on schedule again.")
+
+@app.route("/ban", methods=["POST"])
+def ban():
+    pid = _read_status().get("id")
+    if pid:
+        bl = fp._load_list(fp.BLOCKLIST)
+        if pid not in bl:
+            bl.append(pid); fp._save_list(fp.BLOCKLIST, bl)
+    r = subprocess.run([PYTHON, SCRIPT, "--force"] + flags_from(fp.load_config()),
+                       capture_output=True, text=True, timeout=300)
+    return jsonify(ok=(r.returncode == 0),
+                   message="Banned and replaced with something new." if r.returncode == 0
+                           else "Banned; the replacement failed: " + (r.stderr or "")[-160:])
 
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -159,6 +244,21 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 </style></head><body><div class="wrap">
 <h1>The Frame Machine</h1>
 <p class="muted">Choose what your Frame shows, and when it changes.</p>
+
+<div class="card" id="nowcard">
+ <div style="display:flex;gap:16px;align-items:flex-start">
+  <img id="cur" style="width:190px;border-radius:8px;border:1px solid var(--line);display:none">
+  <div style="flex:1;min-width:0">
+   <div class="sub" id="laststatus">Loading…</div>
+   <div id="nowtitle" style="font-weight:600;margin-top:4px"></div>
+   <div class="sub" id="nowmeta"></div>
+   <div class="actions" style="margin-top:12px">
+    <button id="pin" style="background:#303033;color:var(--ink)">Pin</button>
+    <button id="ban" style="background:#303033;color:var(--ink)">Ban this</button>
+   </div>
+  </div>
+ </div>
+</div>
 
 <div class="card">
  <label class="f">Caption <span class="sub">— the story under each piece</span></label>
@@ -230,6 +330,9 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  <label class="f" style="margin-top:16px">Phone alerts — ntfy topic</label>
  <input type="text" id="ntfy_topic" placeholder="e.g. my-frame-alerts-8b3" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px">
  <p class="sub" style="margin-top:8px">Pick any hard-to-guess word, then subscribe to it in the free <b>ntfy</b> app to get a push if a run ever fails. Leave blank for none.</p>
+ <label class="f" style="margin-top:16px">Panel password</label>
+ <input type="password" id="password" placeholder="leave blank to keep current" autocomplete="new-password" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px">
+ <p class="sub" style="margin-top:8px">Requires a login to open this panel. Blank leaves it unchanged; to remove it, clear it in config.json.</p>
 </details></div>
 </div>
 
@@ -237,9 +340,10 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 const cfg = {{ cfg|tojson }};
 const $ = id => document.getElementById(id);
 const el = {content:$('content'), source:$('source'), all_types:$('all_types'), typegrid:$('typegrid'),
-  qr:$('qr'), tone:$('tone'), tonerow:$('tonerow'), ntfy_topic:$('ntfy_topic'),
+  qr:$('qr'), tone:$('tone'), tonerow:$('tonerow'), ntfy_topic:$('ntfy_topic'), password:$('password'),
   frequency:$('frequency'), time:$('time'), mat:$('mat'), mac:$('mac'), status:$('status'), pv:$('pv'),
-  save:$('save'), prev:$('prev'), now:$('now')};
+  save:$('save'), prev:$('prev'), now:$('now'),
+  cur:$('cur'), laststatus:$('laststatus'), nowtitle:$('nowtitle'), nowmeta:$('nowmeta'), pin:$('pin'), ban:$('ban')};
 function setSeg(val){document.querySelectorAll('#description button').forEach(b=>b.classList.toggle('on',b.dataset.v===val));
   el.tonerow.style.display = (val==='made-up') ? 'block' : 'none';}
 document.querySelectorAll('#description button').forEach(b=>b.onclick=()=>setSeg(b.dataset.v));
@@ -257,7 +361,7 @@ function collect(){return {description:document.querySelector('#description butt
   content:el.content.value, source:el.source.value, all_types:el.all_types.checked,
   types:[...document.querySelectorAll('.tcheck')].filter(c=>c.checked).map(c=>c.dataset.type),
   qr:el.qr.checked, tone:el.tone.value, ntfy_topic:el.ntfy_topic.value.trim(),
-  frequency:el.frequency.value, time:el.time.value, mat:el.mat.value,
+  password:el.password.value, frequency:el.frequency.value, time:el.time.value, mat:el.mat.value,
   mac:el.mac.value.trim(), placard:true, replace:true};}
 async function post(url,btn,label){el.status.textContent=label+'…';
   const old=btn.textContent; btn.disabled=true;
@@ -267,7 +371,17 @@ async function post(url,btn,label){el.status.textContent=label+'…';
   }catch(e){el.status.textContent='Error: '+e;} btn.disabled=false;btn.textContent=old;}
 el.save.onclick=()=>post('/save',el.save,'Saving');
 el.prev.onclick=()=>post('/preview',el.prev,'Rendering a preview (can take ~20s)');
-el.now.onclick=()=>post('/change-now',el.now,'Changing the art on your TV (can take a minute)');
+el.now.onclick=async()=>{await post('/change-now',el.now,'Changing the art on your TV (can take a minute)');loadState();};
+async function loadState(){try{const j=await (await fetch('/state')).json(); const s=j.status||{};
+  el.laststatus.textContent=(s.ok===false?'⚠ Last run failed: ':'Now showing · ')+(s.message||'');
+  el.nowtitle.textContent=s.title?(s.title+(s.artist?(' — '+s.artist):'')):'';
+  el.nowmeta.textContent=[s.source,s.when&&s.when.replace('T',' ')].filter(Boolean).join(' · ');
+  if(j.has_image){el.cur.src='/current.jpg?t='+Date.now();el.cur.style.display='block';}
+  el.pin.textContent=j.pinned?'Unpin':'Pin'; el.pin.classList.toggle('on',j.pinned);
+}catch(e){}}
+el.pin.onclick=async()=>{const j=await (await fetch('/pin',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
+el.ban.onclick=async()=>{el.status.textContent='Banning & replacing…';const j=await (await fetch('/ban',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
+loadState();
 </script></body></html>"""
 
 if __name__ == "__main__":
