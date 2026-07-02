@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- macOS launchd template. Replace the __PLACEHOLDERS__, then:
+       cp com.example.frameart.plist ~/Library/LaunchAgents/
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.frameart.plist
+     Reload after edits with bootout + bootstrap (see README). -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.example.frameart</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON__</string>          <!-- e.g. /usr/local/bin/python3 (absolute; launchd ignores PATH) -->
+    <string>__PATH_TO__/frame_push.py</string>
+    <string>--mac</string><string>__FRAME_MAC__</string>   <!-- your TV's wireless MAC -->
+    <string>--fetch</string><string>1</string>
+    <string>--mat</string><string>charcoal</string>
+    <string>--theme</string><string>museum</string>
+    <string>--placard</string>
+    <string>--all-types</string>
+    <string>--describe</string>
+    <string>--replace</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>30</integer></dict>
+  <key>StandardOutPath</key><string>__PATH_TO__/frameart.log</string>
+  <key>StandardErrorPath</key><string>__PATH_TO__/frameart.log</string>
+  <key>RunAtLoad</key><false/>
+</dict>
+</plist>

@@ -1,0 +1,123 @@
+# The Frame Machine
+
+Turn a **Samsung The Frame** TV into a self-refreshing museum wall — for free, with no Art
+Store subscription. Every day it pulls a public-domain artwork from **The Metropolitan Museum
+of Art's** open collection, lays it out as a gallery display (artwork + wall label), and pushes
+it to the TV over the local network. Optionally, it captions each piece with a gleefully
+made-up story and stamps on a QR code to the real museum page.
+
+It runs entirely on your own machine (a Mac mini, a Raspberry Pi, any always-on box) and talks
+to the TV directly over its local WebSocket API — no cloud, no account, no subscription.
+
+![example placard](docs/example.jpg)
+
+## What it does
+
+- **Free art, daily.** Fetches public-domain works from the keyless [Met Collection API](https://metmuseum.github.io/).
+  The art is CC0 (public domain) — yours to display.
+- **Finds the TV by MAC address.** Survives DHCP changes — no static IP needed. Wakes the TV
+  (Wake-on-LAN) and waits for the art channel before uploading.
+- **Museum-placard layout.** Fits the artwork with a keyline and renders a real gallery label
+  beside it: artist, dates, title, year, medium, dimensions, credit line.
+- **Genres or the whole museum.** Pick a style (`impressionist`, `ukiyo-e`, `old-masters`,
+  `landscape`), cycle one genre per day, or `museum` mode for a random piece from the entire
+  ~500,000-object collection — any type: paintings, prints, sculpture, ceramics, armour.
+- **Made-up stories (optional).** With an Anthropic API key, each piece gets a two-sentence,
+  deliberately absurd invented backstory. The real artist/title/date stay accurate up top; a
+  **QR code** links to the genuine Met page so you can check the truth.
+- **Rotates cleanly.** `--replace` prunes the previous day's upload so nothing piles up. Never
+  touches art you added yourself.
+
+## Requirements
+
+- A Samsung **The Frame** TV on your LAN (tested on a 2022 LS03B / firmware 1720; the art
+  WebSocket on port 8002 must be reachable — it is on many 2020–2023 models).
+- An always-on computer on the same network (macOS or Linux). Python 3.10+.
+- `pip install -r requirements.txt`
+
+## Setup
+
+```bash
+git clone https://github.com/OWNER/the-frame-machine
+cd the-frame-machine
+pip install -r requirements.txt
+```
+
+1. **Find your TV's wireless MAC** — on the TV: *Settings → General/Support → About This TV*,
+   or from your router. Set it via `--mac AA:BB:CC:DD:EE:FF` or `export FRAME_MAC=...`.
+2. **First run pairs with the TV.** With the TV awake, run a small test. The TV shows an
+   "Allow" prompt the first time — accept it. The pairing token is saved to
+   `~/.config/frame/token.txt` (tied to the TV, not the IP).
+
+```bash
+export FRAME_MAC=AA:BB:CC:DD:EE:FF
+python3 frame_push.py --fetch 1 --mat charcoal --placard --replace
+```
+
+## Usage
+
+```bash
+# One random piece from the whole collection, museum layout + invented story + QR
+python3 frame_push.py --fetch 1 --theme museum --placard --all-types --describe --replace
+
+# A different genre each day
+python3 frame_push.py --fetch 1 --theme cycle --placard --replace
+
+# Pin one style, or free-text search
+python3 frame_push.py --fetch 1 --theme old-masters --placard --replace
+python3 frame_push.py --fetch 1 --query Hiroshige --placard --replace
+
+# Push your own images
+python3 frame_push.py --files a.jpg b.jpg
+```
+
+Key flags: `--theme {impressionist,ukiyo-e,old-masters,landscape,mix,cycle,museum}`,
+`--placard` (gallery label), `--all-types` (allow sculpture/objects, not just wall art),
+`--describe` (add a story), `--mat {off_white,linen,charcoal,black}`, `--replace`,
+`--slideshow N`. Run `--help` for all.
+
+### Descriptions & the optional Anthropic key
+
+`--describe` writes a short, deliberately silly invented tale for each piece using Claude, and
+adds a QR code to the real Met page. It's dormant unless you provide a key:
+
+```bash
+echo 'sk-ant-...' > ~/.config/frame/anthropic_key.txt   # or set ANTHROPIC_API_KEY
+```
+
+Cost is a fraction of a cent per run. Without a key, `--describe` simply shows the factual
+label (no story). *(A `met_prose()` helper that scrapes the Met's own real captions is included
+but unused by default — see the code if you'd prefer authentic captions to invented ones.)*
+
+## Running it daily
+
+**macOS (launchd).** Edit `com.example.frameart.plist` (fill in the `__PLACEHOLDERS__`: absolute
+python path, script path, your MAC), then:
+
+```bash
+cp com.example.frameart.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.frameart.plist
+# reload after edits:  launchctl bootout gui/$(id -u)/com.example.frameart && launchctl bootstrap ...
+```
+
+**Linux (cron).** `30 7 * * *  FRAME_MAC=AA:.. /usr/bin/python3 /path/frame_push.py --fetch 1 --theme museum --placard --all-types --describe --replace`
+
+## Gotchas
+
+- **The TV must be awake for the API to answer.** Deep standby drops it off the network. WoL
+  wakes it from light standby reliably; from deep overnight standby, WoL over Wi-Fi is hit-or-
+  miss — a **wired ethernet** connection makes it bulletproof.
+- **One image, once a day** is the most reliable cadence: a single upload finishes before the
+  TV can nod off, and it's displayed directly (no reliance on the TV's slideshow shuffle).
+- Confirm the TV's IP by MAC if anything seems off: `arp -an | grep -i <mac-prefix>`.
+
+## Credits & notes
+
+- Art & metadata: [The Met Collection API](https://metmuseum.github.io/) (Open Access, CC0).
+- TV control: [samsungtvws](https://github.com/xchwarze/samsung-tv-ws-api).
+- Not affiliated with or endorsed by Samsung, The Metropolitan Museum of Art, or Anthropic.
+  "The Frame" is a Samsung trademark. Respect the Met's [Open Access terms](https://www.metmuseum.org/about-the-met/policies-and-documents/open-access).
+
+## License
+
+MIT — see [LICENSE](LICENSE).

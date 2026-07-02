@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local state / secrets (never commit these)
+token.txt
+uploaded.json
+met_object_ids.json
+anthropic_key.txt
+last_run.txt
+*.log
+
+# OS
+.DS_Store

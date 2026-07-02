@@ -1,0 +1,5 @@
+samsungtvws[async,encrypted,cli]
+pillow
+requests
+qrcode
+wakeonlan
