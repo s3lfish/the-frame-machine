@@ -559,7 +559,8 @@ def _headline():
 
 def ai_blurb(meta, tone="whimsical"):
     """Fallback when there's no real prose: a deliberately fake, self-evidently invented
-    mini-tale from Claude. `tone` may be one tone or a list — a random one is picked."""
+    mini-tale from Claude. `tone` may be one tone or a list — a random one is picked.
+    Returns (text, tone_used) so the caller can show/act on which voice was chosen."""
     if isinstance(tone, (list, tuple)):
         tone = random.choice(tone) if tone else "whimsical"
     key = os.environ.get("ANTHROPIC_API_KEY")
@@ -568,7 +569,7 @@ def ai_blurb(meta, tone="whimsical"):
         if os.path.exists(kf):
             key = open(kf).read().strip()
     if not key:
-        return None
+        return None, None
     facts = ", ".join(f"{k}: {meta[k]}" for k in ("artist", "title", "date", "medium",
              "culture", "objectName") if meta.get(k))
     style = TONES.get(tone, TONES["whimsical"])
@@ -589,10 +590,11 @@ def ai_blurb(meta, tone="whimsical"):
             timeout=30)
         text = r.json()["content"][0]["text"].strip()
         text = re.sub(r"^\s*#+.*$", "", text, flags=re.M).strip()   # drop any stray heading line
-        return _truncate_prose(text) or None
+        text = _truncate_prose(text) or None
+        return text, (tone if text else None)
     except Exception as e:
         print(f"  ! ai_blurb: {str(e)[:80]}", file=sys.stderr)
-        return None
+        return None, None
 
 def mat_with_placard(art, meta, mat_rgb, desc=None, link=None):
     """Fit the artwork on the left and render a gallery-label panel on the right,
@@ -666,16 +668,17 @@ def _render_piece(art, meta, mat_rgb, path, placard, describe, qr, tone, page_ur
     'real' captions come from `real_text` (Cleveland) or by scraping the Met page (scrape=True)."""
     if googly:
         art = add_googly_eyes(art)
-    desc = None
+    desc, caption_style = None, None
     if placard and describe == "real":
         desc = _truncate_prose(real_text) if real_text else (met_prose(page_url) if scrape else None)
     elif placard and describe == "made-up":
-        desc = ai_blurb(meta, tone)
+        desc, caption_style = ai_blurb(meta, tone)
     if desc:
-        print(f"    + {describe}: {desc[:60]}...")
+        print(f"    + {describe}{f' ({caption_style})' if caption_style else ''}: {desc[:60]}...")
     link = page_url if (placard and describe != "off" and qr) else None
     canvas = mat_with_placard(art, meta, mat_rgb, desc, link) if placard else mat_image(art, mat_rgb)
     canvas.save(path, "JPEG", quality=JPEG_Q)
+    return caption_style   # which made-up voice was used (None for real/off), so the panel can show it
 
 def plan_search(query, theme):
     """Return (terms_to_search, required_artists). required_artists is a lowercased
@@ -786,11 +789,12 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
                     "culture": culture, "objectName": o.get("objectName"), "culture_period": cp,
                     "credit": o.get("creditLine"), "museum": "The Metropolitan Museum of Art"}
             p = os.path.join(TMP, f"{len(paths)+1:02d}_{slug(o.get('title','art'))}.jpg")
-            _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("objectURL"), scrape=True, googly=googly)
+            caption_style = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("objectURL"), scrape=True, googly=googly)
             paths.append(p)
             LAST_PIECES.append({"title": o.get("title") or "", "source": o.get("_source_name", "The Met"),
                                 "artist": o.get("artistDisplayName") or o.get("culture") or "Unknown",
-                                "url": o.get("objectURL") or "", "id": f"met:{o.get('objectID')}"})
+                                "url": o.get("objectURL") or "", "id": f"met:{o.get('objectID')}",
+                                "caption_style": caption_style or ""})
             print(f"  prepped: {o.get('title','?')} — {o.get('artistDisplayName') or o.get('culture') or 'Unknown'}")
         except Exception as e:
             print(f"  ! skip {oid}: {str(e)[:120]}", file=sys.stderr)
@@ -855,10 +859,11 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
                 continue
             art = Image.open(io.BytesIO(r.content)).convert("RGB")
             p = os.path.join(TMP, f"{len(paths)+1:02d}_{slug(meta['title'])}.jpg")
-            _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("url"), real_text=o.get("description"), googly=googly)
+            caption_style = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("url"), real_text=o.get("description"), googly=googly)
             paths.append(p)
             LAST_PIECES.append({"title": meta["title"], "artist": name or meta["culture"] or "Unknown",
-                                "url": o.get("url") or "", "source": CLE_NAME, "id": f"cle:{o.get('id')}"})
+                                "url": o.get("url") or "", "source": CLE_NAME, "id": f"cle:{o.get('id')}",
+                                "caption_style": caption_style or ""})
             print(f"  prepped: {meta['title']} — {name or meta['culture'] or 'Unknown'}")
         except Exception as e:
             print(f"  ! skip {o.get('id')}: {str(e)[:120]}", file=sys.stderr)

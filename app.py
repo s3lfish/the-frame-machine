@@ -258,7 +258,7 @@ def _navigate(step):
     fp.nav_set(new)
     shutil.copy(entry["file"], fp.CURRENT_IMG)
     fp.write_status(True, f"Showing {entry.get('title','art')}",
-                    {k: entry.get(k, "") for k in ("id", "title", "artist", "url", "source")})
+                    {k: entry.get(k, "") for k in ("id", "title", "artist", "url", "source", "caption_style")})
     return jsonify(ok=True, message=f"{entry.get('title','art')} — {new + 1} of {len(nav)}")
 
 @app.route("/back", methods=["POST"])
@@ -268,6 +268,21 @@ def back():
 @app.route("/forward", methods=["POST"])
 def forward():
     return _navigate(+1)
+
+@app.route("/drop-voice", methods=["POST"])
+def drop_voice():
+    """Remove the made-up voice used for the current piece from the rotation, so a
+    voice you didn't like won't come up again."""
+    style = _read_status().get("caption_style")
+    tones = fp.load_config().get("tone") or []
+    if isinstance(tones, str):
+        tones = [tones]
+    if not style or style not in tones:
+        return jsonify(ok=False, message="No made-up voice to drop for this piece.")
+    if len(tones) <= 1:
+        return jsonify(ok=False, message=f"“{style}” is your only voice — tick a few others first, then drop it.")
+    save_config({"tone": [t for t in tones if t != style]})
+    return jsonify(ok=True, dropped=style, message=f"Dropped “{style}” — it won't be used again.")
 
 @app.route("/favourite", methods=["POST"])
 def favourite():
@@ -337,10 +352,12 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    <div class="sub" id="laststatus">Loading…</div>
    <div id="nowtitle" style="font-weight:600;margin-top:4px"></div>
    <div class="sub" id="nowmeta"></div>
+   <div class="sub" id="nowstyle" style="margin-top:4px"></div>
    <div class="actions" style="margin-top:12px">
     <button id="fav" style="background:#303033;color:var(--ink)">♥ Favourite</button>
     <button id="pin" style="background:#303033;color:var(--ink)">Stop this from changing</button>
     <button id="ban" style="background:#303033;color:var(--ink)">Never show again</button>
+    <button id="dropvoice" style="background:#303033;color:var(--ink);display:none">Drop this voice</button>
    </div>
   </div>
  </div>
@@ -464,6 +481,7 @@ const el = {content:$('content'), source:$('source'), all_types:$('all_types'), 
   frequency:$('frequency'), time:$('time'), mat:$('mat'), mac:$('mac'), status:$('status'), pv:$('pv'),
   save:$('save'), prev:$('prev'), now:$('now'), historylist:$('historylist'),
   cur:$('cur'), laststatus:$('laststatus'), nowtitle:$('nowtitle'), nowmeta:$('nowmeta'),
+  nowstyle:$('nowstyle'), dropvoice:$('dropvoice'),
   pin:$('pin'), ban:$('ban'), fav:$('fav'), nowtop:$('nowtop'), back:$('back'), fwd:$('fwd')};
 function setSeg(val){document.querySelectorAll('#description button').forEach(b=>b.classList.toggle('on',b.dataset.v===val));
   el.tonerow.style.display = (val==='made-up') ? 'block' : 'none';}
@@ -518,6 +536,10 @@ async function loadState(){try{const j=await (await fetch('/state')).json(); con
   el.laststatus.textContent=(s.ok===false?'⚠ Last run failed: ':'Now showing · ')+(s.message||'');
   el.nowtitle.textContent=s.title?(s.title+(s.artist?(' — '+s.artist):'')):'';
   el.nowmeta.textContent=[s.source,s.when&&s.when.replace('T',' ')].filter(Boolean).join(' · ');
+  const style=s.caption_style||'';
+  el.nowstyle.textContent=style?('Made-up voice: '+style):'';
+  el.dropvoice.textContent=style?('Drop “'+style+'” voice'):'Drop this voice';
+  el.dropvoice.style.display=style?'inline-block':'none';
   if(j.has_image){el.cur.src='/current.jpg?t='+Date.now();el.cur.style.display='block';}
   el.pin.textContent=j.pinned?'Let it change again':'Stop this from changing'; el.pin.classList.toggle('on',j.pinned);
   el.historylist.innerHTML=(j.history&&j.history.length)? j.history.map(h=>{
@@ -528,6 +550,9 @@ async function loadState(){try{const j=await (await fetch('/state')).json(); con
 el.pin.onclick=async()=>{const j=await (await fetch('/pin',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
 el.ban.onclick=async()=>{el.status.textContent='Finding a replacement…';const j=await (await fetch('/ban',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
 el.fav.onclick=async()=>{const j=await (await fetch('/favourite',{method:'POST'})).json();el.status.textContent=j.message;};
+el.dropvoice.onclick=async()=>{const j=await (await fetch('/drop-voice',{method:'POST'})).json();el.status.textContent=j.message;
+  if(j.ok&&j.dropped){document.querySelectorAll('.tonecheck').forEach(c=>{if(c.dataset.tone===j.dropped)c.checked=false;});}
+  loadState();};
 loadState();
 </script></body></html>"""
 
