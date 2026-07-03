@@ -82,6 +82,8 @@ def flags_from(cfg):
          "--source", cfg.get("source", "met")]
     tones = cfg.get("tone") or ["whimsical"]
     f += ["--tone", ",".join(tones if isinstance(tones, list) else [tones])]
+    if cfg.get("tone_weights"):
+        f += ["--tone-weights", json.dumps(cfg["tone_weights"])]
     if cfg.get("all_types"):
         f += ["--all-types"]
     else:
@@ -280,8 +282,9 @@ def drop_voice():
     if not style or style not in tones:
         return jsonify(ok=False, message="No made-up voice to drop for this piece.")
     if len(tones) <= 1:
-        return jsonify(ok=False, message=f"“{style}” is your only voice — tick a few others first, then drop it.")
-    save_config({"tone": [t for t in tones if t != style]})
+        return jsonify(ok=False, message=f"“{style}” is your only voice — turn a few others on first, then drop it.")
+    weights = {k: v for k, v in (fp.load_config().get("tone_weights") or {}).items() if k != style}
+    save_config({"tone": [t for t in tones if t != style], "tone_weights": weights})
     return jsonify(ok=True, dropped=style, message=f"Dropped “{style}” — it won't be used again.")
 
 @app.route("/favourite", methods=["POST"])
@@ -323,6 +326,12 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  .typegrid{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin-top:12px;
    padding-top:12px;border-top:1px solid var(--line)} .typegrid.hidden{display:none}
  .tk input{width:18px;height:18px} .tk span{font-size:14px}
+ .voicerow{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;
+   padding:7px 0;border-bottom:1px solid var(--line)}
+ .voicerow .vname{font-size:14px}
+ .lvl{display:flex;gap:4px} .lvl button{background:#303033;color:var(--sub);border:1px solid var(--line);
+   border-radius:8px;padding:5px 9px;font-size:12px;cursor:pointer}
+ .lvl button.on{background:var(--accent);color:#1c1c1e;border-color:var(--accent);font-weight:600}
  .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:4px}
  .actions button{flex:1;min-width:130px;border-radius:10px;padding:13px;font-size:15px;font-weight:600;cursor:pointer;border:1px solid var(--line)}
  #save{background:#303033;color:var(--ink)} #prev{background:#303033;color:var(--ink)}
@@ -377,9 +386,11 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
      <button data-v="real">Real caption</button>
      <button data-v="made-up">Made-up tale</button>
    </div>
-   <div id="tonerow" style="margin-top:14px"><label class="f">Made-up voice(s) <span class="sub">— one is picked at random each time</span></label>
-     <div class="typegrid" id="tonegrid" style="border-top:none;padding-top:4px">
-       {% for t in tones %}<label class="chk tk"><input type="checkbox" class="tonecheck" data-tone="{{t}}"><span>{{t|capitalize}}</span></label>{% endfor %}
+   <div id="tonerow" style="margin-top:14px"><label class="f">Made-up voice(s) <span class="sub">— one is picked each time; set how often each turns up</span></label>
+     <div id="tonegrid" style="margin-top:4px">
+       {% for t in tones %}<div class="voicerow" data-tone="{{t}}"><span class="vname">{{t|capitalize}}</span>
+         <div class="lvl"><button data-w="0">Off</button><button data-w="0.35">Rarely</button><button data-w="1">Normal</button><button data-w="2.5">Often</button></div>
+       </div>{% endfor %}
      </div></div>
    <label class="chk" style="margin-top:14px"><input type="checkbox" id="qr">
      <span>Show a QR code <span class="sub">— links to the real museum page for this piece</span></span></label>
@@ -504,8 +515,17 @@ el.holidays.checked=!!cfg.holidays; el.subject.value=cfg.subject||'';
 el.weather.checked=!!cfg.weather; el.on_this_day.checked=!!cfg.on_this_day; el.googly.checked=!!cfg.googly;
 el.latitude.value=(cfg.latitude!=null?cfg.latitude:''); el.longitude.value=(cfg.longitude!=null?cfg.longitude:'');
 el.placard.checked=cfg.placard!==false;
-const tset=new Set(Array.isArray(cfg.tone)?cfg.tone:[cfg.tone||'whimsical']);
-document.querySelectorAll('.tonecheck').forEach(c=>c.checked=tset.has(c.dataset.tone));
+// per-voice frequency levels (Off/Rarely/Normal/Often -> weight 0/0.35/1/2.5)
+const LVLS=[0,0.35,1,2.5];
+function setVoice(row,w){row.dataset.w=w;row.querySelectorAll('.lvl button').forEach(b=>b.classList.toggle('on',parseFloat(b.dataset.w)===w));}
+function voiceRow(t){return document.querySelector('.voicerow[data-tone="'+t+'"]');}
+(function(){const tset=new Set(Array.isArray(cfg.tone)?cfg.tone:[cfg.tone||'whimsical']);
+  const tw=cfg.tone_weights||{};
+  document.querySelectorAll('.voicerow').forEach(row=>{const t=row.dataset.tone;
+    let w = tset.has(t) ? (t in tw ? LVLS.reduce((a,b)=>Math.abs(b-tw[t])<Math.abs(a-tw[t])?b:a) : 1) : 0;
+    setVoice(row,w);
+    row.querySelectorAll('.lvl button').forEach(b=>b.onclick=()=>setVoice(row,parseFloat(b.dataset.w)));
+  });})();
 syncPlacard();
 const chosen=new Set(cfg.types||[]);
 document.querySelectorAll('.tcheck').forEach(c=>c.checked=chosen.has(c.dataset.type));
@@ -514,7 +534,8 @@ function collect(){return {description:document.querySelector('#description butt
   content:el.content.value, source:el.source.value, all_types:el.all_types.checked,
   types:[...document.querySelectorAll('.tcheck')].filter(c=>c.checked).map(c=>c.dataset.type),
   qr:el.qr.checked, placard:el.placard.checked,
-  tone:[...document.querySelectorAll('.tonecheck')].filter(c=>c.checked).map(c=>c.dataset.tone),
+  tone:[...document.querySelectorAll('.voicerow')].filter(r=>parseFloat(r.dataset.w)>0).map(r=>r.dataset.tone),
+  tone_weights:Object.fromEntries([...document.querySelectorAll('.voicerow')].filter(r=>parseFloat(r.dataset.w)>0).map(r=>[r.dataset.tone,parseFloat(r.dataset.w)])),
   seasonal:el.seasonal.checked, holidays:el.holidays.checked, subject:el.subject.value.trim(),
   weather:el.weather.checked, on_this_day:el.on_this_day.checked, googly:el.googly.checked,
   latitude:el.latitude.value.trim()===''?null:parseFloat(el.latitude.value),
@@ -556,7 +577,7 @@ el.pin.onclick=async()=>{const j=await (await fetch('/pin',{method:'POST'})).jso
 el.ban.onclick=async()=>{el.status.textContent='Finding a replacement…';const j=await (await fetch('/ban',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
 el.fav.onclick=async()=>{const j=await (await fetch('/favourite',{method:'POST'})).json();el.status.textContent=j.message;};
 el.dropvoice.onclick=async()=>{const j=await (await fetch('/drop-voice',{method:'POST'})).json();el.status.textContent=j.message;
-  if(j.ok&&j.dropped){document.querySelectorAll('.tonecheck').forEach(c=>{if(c.dataset.tone===j.dropped)c.checked=false;});}
+  if(j.ok&&j.dropped){const row=voiceRow(j.dropped);if(row)setVoice(row,0);}
   loadState();};
 loadState();
 </script></body></html>"""

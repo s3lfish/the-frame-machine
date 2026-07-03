@@ -131,7 +131,9 @@ When the installer finishes it prints a link — open it on any phone or laptop 
 
 - **Change the art now**, or step **◀ Back / Forward ▶** through the last ~40 pieces, right at the top.
 - **Caption:** none, the museum's own real caption, or a made-up tale — in ~18 voices (pirate,
-  noir, Shakespearean, Attenborough, topical…), one picked at random.
+  noir, Shakespearean, Attenborough, topical…), one picked each time. Set how often each voice
+  turns up — **Off / Rarely / Normal / Often** — so you can dial back the ones you don't love
+  without losing them entirely. The panel also shows which voice wrote the current caption.
 - **Content:** the whole museum, a single genre, a genre-a-day cycle, or *"only show art of
   cats"*. Match the season, the live weather, or a historical event *on this day*; celebrate
   holidays. Pick the museum (the Met, Cleveland, or either).

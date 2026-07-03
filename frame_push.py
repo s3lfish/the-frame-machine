@@ -228,7 +228,8 @@ DEFAULTS = {"mac": "", "ip": None, "description": "made-up", "content": "museum"
             "ntfy_topic": "", "tone": ["whimsical"], "source": "met", "orientation": "landscape",
             "pinned": False, "seasonal": False, "hemisphere": "north",
             "subject": "", "holidays": False, "weather": False, "on_this_day": False,
-            "googly": False, "latitude": None, "longitude": None}
+            "googly": False, "latitude": None, "longitude": None, "tone_weights": {}}
+_TONE_WEIGHTS = None   # per-run override for made-up-voice weights (set from --tone-weights), else config's
 STATUS = os.path.join(CFG, "status.json")   # last-run outcome, for alerts + the dashboard
 HISTORY = os.path.join(CFG, "history.json") # recently displayed pieces (for no-repeats + dashboard)
 BLOCKLIST = os.path.join(CFG, "blocklist.json")  # ids the user has banned
@@ -557,12 +558,27 @@ def _headline():
     heads = [t.strip() for t in titles[1:] if t.strip()]   # [0] is the feed's own title
     return random.choice(heads[:10]) if heads else None
 
+def _weighted_tone(tones):
+    """Pick one voice from `tones`, honouring per-voice relative weights (from the
+    --tone-weights override or config['tone_weights']; default 1.0 each). A weight of 0
+    excludes a voice; if every weight is 0 or none are set, it's a plain uniform pick.
+    Weights only bias which of the *enabled* voices comes up — turning a voice fully off
+    is still done by removing it from the list, so there's no feedback loop."""
+    tones = list(tones)
+    if not tones:
+        return "whimsical"
+    tw = _TONE_WEIGHTS if _TONE_WEIGHTS is not None else (load_config().get("tone_weights") or {})
+    weights = [max(0.0, float(tw.get(t, 1.0))) for t in tones]
+    if sum(weights) <= 0:
+        return random.choice(tones)
+    return random.choices(tones, weights=weights, k=1)[0]
+
 def ai_blurb(meta, tone="whimsical"):
     """Fallback when there's no real prose: a deliberately fake, self-evidently invented
-    mini-tale from Claude. `tone` may be one tone or a list — a random one is picked.
+    mini-tale from Claude. `tone` may be one tone or a weighted list — one is picked.
     Returns (text, tone_used) so the caller can show/act on which voice was chosen."""
     if isinstance(tone, (list, tuple)):
-        tone = random.choice(tone) if tone else "whimsical"
+        tone = _weighted_tone(tone) if tone else "whimsical"
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         kf = os.path.join(CFG, "anthropic_key.txt")
@@ -935,6 +951,9 @@ def _gather(args, mat_rgb, count):
 
 def run(args):
     mat_rgb = MAT_COLORS[args.mat]
+    if getattr(args, "tone_weights", None) is not None:   # live weights from the panel override config's
+        global _TONE_WEIGHTS
+        _TONE_WEIGHTS = args.tone_weights
 
     # Preview: render one image to a file and stop — never touches the TV.
     if args.preview:
@@ -1090,6 +1109,8 @@ def main():
     ap.add_argument("--tone", default=_tone_default,
                     type=lambda s: [x.strip() for x in s.split(",") if x.strip() in TONES],
                     help="voice(s) for made-up captions, comma-separated; one is picked at random")
+    ap.add_argument("--tone-weights", dest="tone_weights", type=json.loads, default=None,
+                    help="JSON map of voice->relative weight, e.g. '{\"pirate\":2.5,\"noir\":0.35}'")
     ap.add_argument("--seasonal", action=argparse.BooleanOptionalAction, default=cfg.get("seasonal", False),
                     help="bias art to the current season")
     ap.add_argument("--hemisphere", choices=["north", "south"], default=cfg.get("hemisphere", "north"),
