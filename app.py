@@ -97,7 +97,10 @@ def flags_from(cfg):
     f += ["--holidays"] if cfg.get("holidays") else ["--no-holidays"]
     f += ["--weather"] if cfg.get("weather") else ["--no-weather"]
     f += ["--on-this-day"] if cfg.get("on_this_day") else ["--no-on-this-day"]
-    f += ["--googly"] if cfg.get("googly") else ["--no-googly"]
+    gc = cfg.get("googly_chance")
+    if gc is None:
+        gc = 1.0 if cfg.get("googly") else 0.0
+    f += ["--googly-chance", str(gc)]
     f += ["--hemisphere", cfg.get("hemisphere", "north")]
     if cfg.get("latitude") is not None and cfg.get("longitude") is not None:
         f += ["--latitude", str(cfg["latitude"]), "--longitude", str(cfg["longitude"])]
@@ -428,8 +431,10 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    <span>Match today's weather <span class="sub">— rain, snow or sunshine, from your local forecast</span></span></label>
  <label class="chk" style="margin-top:14px"><input type="checkbox" id="on_this_day">
    <span>On this day <span class="sub">— art tied to a historical event from today's date</span></span></label>
- <label class="chk" style="margin-top:14px"><input type="checkbox" id="googly">
-   <span>Googly eyes <span class="sub">— stick cartoon eyes on any faces, just for fun</span></span></label>
+ <div class="voicerow" id="googly" data-w="0" style="margin-top:14px">
+   <span class="vname">Googly eyes <span class="sub">— cartoon eyes on any faces, just for fun</span></span>
+   <div class="lvl"><button data-w="0">Never</button><button data-w="0.2">Rarely</button><button data-w="0.5">Sometimes</button><button data-w="1">Always</button></div>
+ </div>
  <label class="chk" style="margin-top:14px"><input type="checkbox" id="all_types">
    <span>All object types <span class="sub">— everything the museum has</span></span></label>
  <div id="typegrid" class="typegrid">
@@ -517,7 +522,7 @@ el.time.value=cfg.time; el.mat.value=cfg.mat; el.mac.value=cfg.mac||''; el.qr.ch
 el.source.value=cfg.source||'met'; el.ntfy_topic.value=cfg.ntfy_topic||'';
 el.seasonal.checked=!!cfg.seasonal; el.hemisphere.value=cfg.hemisphere||'north';
 el.holidays.checked=!!cfg.holidays; el.subject.value=cfg.subject||'';
-el.weather.checked=!!cfg.weather; el.on_this_day.checked=!!cfg.on_this_day; el.googly.checked=!!cfg.googly;
+el.weather.checked=!!cfg.weather; el.on_this_day.checked=!!cfg.on_this_day;
 el.latitude.value=(cfg.latitude!=null?cfg.latitude:''); el.longitude.value=(cfg.longitude!=null?cfg.longitude:'');
 el.placard.checked=cfg.placard!==false;
 // per-voice frequency levels (Off/Rarely/Normal/Often -> weight 0/0.35/1/2.5)
@@ -526,11 +531,15 @@ function setVoice(row,w){row.dataset.w=w;row.querySelectorAll('.lvl button').for
 function voiceRow(t){return document.querySelector('.voicerow[data-tone="'+t+'"]');}
 (function(){const tset=new Set(Array.isArray(cfg.tone)?cfg.tone:[cfg.tone||'whimsical']);
   const tw=cfg.tone_weights||{};
-  document.querySelectorAll('.voicerow').forEach(row=>{const t=row.dataset.tone;
+  document.querySelectorAll('#tonegrid .voicerow').forEach(row=>{const t=row.dataset.tone;
     let w = tset.has(t) ? (t in tw ? LVLS.reduce((a,b)=>Math.abs(b-tw[t])<Math.abs(a-tw[t])?b:a) : 1) : 0;
     setVoice(row,w);
     row.querySelectorAll('.lvl button').forEach(b=>b.onclick=()=>setVoice(row,parseFloat(b.dataset.w)));
   });})();
+// googly eyes: same Never/Rarely/Sometimes/Always scale (chance 0/0.2/0.5/1)
+(function(){const gc=cfg.googly_chance!=null?cfg.googly_chance:(cfg.googly?1:0);
+  setVoice(el.googly,[0,0.2,0.5,1].reduce((a,b)=>Math.abs(b-gc)<Math.abs(a-gc)?b:a));
+  el.googly.querySelectorAll('.lvl button').forEach(b=>b.onclick=()=>setVoice(el.googly,parseFloat(b.dataset.w)));})();
 syncPlacard();
 const chosen=new Set(cfg.types||[]);
 document.querySelectorAll('.tcheck').forEach(c=>c.checked=chosen.has(c.dataset.type));
@@ -539,10 +548,11 @@ function collect(){return {description:document.querySelector('#description butt
   content:el.content.value, source:el.source.value, all_types:el.all_types.checked,
   types:[...document.querySelectorAll('.tcheck')].filter(c=>c.checked).map(c=>c.dataset.type),
   qr:el.qr.checked, placard:el.placard.checked,
-  tone:[...document.querySelectorAll('.voicerow')].filter(r=>parseFloat(r.dataset.w)>0).map(r=>r.dataset.tone),
-  tone_weights:Object.fromEntries([...document.querySelectorAll('.voicerow')].filter(r=>parseFloat(r.dataset.w)>0).map(r=>[r.dataset.tone,parseFloat(r.dataset.w)])),
+  tone:[...document.querySelectorAll('#tonegrid .voicerow')].filter(r=>parseFloat(r.dataset.w)>0).map(r=>r.dataset.tone),
+  tone_weights:Object.fromEntries([...document.querySelectorAll('#tonegrid .voicerow')].filter(r=>parseFloat(r.dataset.w)>0).map(r=>[r.dataset.tone,parseFloat(r.dataset.w)])),
   seasonal:el.seasonal.checked, holidays:el.holidays.checked, subject:el.subject.value.trim(),
-  weather:el.weather.checked, on_this_day:el.on_this_day.checked, googly:el.googly.checked,
+  weather:el.weather.checked, on_this_day:el.on_this_day.checked,
+  googly_chance:parseFloat(el.googly.dataset.w||'0'),
   latitude:el.latitude.value.trim()===''?null:parseFloat(el.latitude.value),
   longitude:el.longitude.value.trim()===''?null:parseFloat(el.longitude.value),
   hemisphere:el.hemisphere.value, ntfy_topic:el.ntfy_topic.value.trim(), password:el.password.value,

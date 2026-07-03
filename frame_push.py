@@ -228,7 +228,7 @@ DEFAULTS = {"mac": "", "ip": None, "description": "made-up", "content": "museum"
             "ntfy_topic": "", "tone": ["whimsical"], "source": "met", "orientation": "landscape",
             "pinned": False, "seasonal": False, "hemisphere": "north",
             "subject": "", "holidays": False, "weather": False, "on_this_day": False,
-            "googly": False, "latitude": None, "longitude": None, "tone_weights": {}}
+            "googly": False, "googly_chance": 0.0, "latitude": None, "longitude": None, "tone_weights": {}}
 _TONE_WEIGHTS = None   # per-run override for made-up-voice weights (set from --tone-weights), else config's
 STATUS = os.path.join(CFG, "status.json")   # last-run outcome, for alerts + the dashboard
 HISTORY = os.path.join(CFG, "history.json") # recently displayed pieces (for no-repeats + dashboard)
@@ -679,10 +679,11 @@ def mat_with_placard(art, meta, mat_rgb, desc=None, link=None):
             print(f"  ! qr: {str(e)[:80]}", file=sys.stderr)
     return canvas
 
-def _render_piece(art, meta, mat_rgb, path, placard, describe, qr, tone, page_url, real_text=None, scrape=False, googly=False):
+def _render_piece(art, meta, mat_rgb, path, placard, describe, qr, tone, page_url, real_text=None, scrape=False, googly_chance=0.0):
     """Render one artwork to `path`: plain art, or a placard with an optional caption + QR.
-    'real' captions come from `real_text` (Cleveland) or by scraping the Met page (scrape=True)."""
-    if googly:
+    'real' captions come from `real_text` (Cleveland) or by scraping the Met page (scrape=True).
+    Googly eyes are applied at random with probability `googly_chance` (0..1)."""
+    if googly_chance and random.random() < googly_chance:
         art = add_googly_eyes(art)
     desc, caption_style = None, None
     if placard and describe == "real":
@@ -729,7 +730,7 @@ def all_object_ids():
         pass
     return ids
 
-def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", subject="", holidays=False, weather=False, on_this_day=False, latitude=None, longitude=None, googly=False):
+def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", subject="", holidays=False, weather=False, on_this_day=False, latitude=None, longitude=None, googly_chance=0.0):
     os.makedirs(TMP, exist_ok=True)
     LAST_PIECES.clear()
     avoid = avoid or set()
@@ -805,7 +806,7 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
                     "culture": culture, "objectName": o.get("objectName"), "culture_period": cp,
                     "credit": o.get("creditLine"), "museum": "The Metropolitan Museum of Art"}
             p = os.path.join(TMP, f"{len(paths)+1:02d}_{slug(o.get('title','art'))}.jpg")
-            caption_style, caption = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("objectURL"), scrape=True, googly=googly)
+            caption_style, caption = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("objectURL"), scrape=True, googly_chance=googly_chance)
             paths.append(p)
             LAST_PIECES.append({"title": o.get("title") or "", "source": o.get("_source_name", "The Met"),
                                 "artist": o.get("artistDisplayName") or o.get("culture") or "Unknown",
@@ -822,7 +823,7 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
 CLE_API = "https://openaccess-api.clevelandart.org/api/artworks/"
 CLE_NAME = "Cleveland Museum of Art"
 
-def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", all_types=True, subject="", holidays=False, weather=False, on_this_day=False, latitude=None, longitude=None, googly=False):
+def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", all_types=True, subject="", holidays=False, weather=False, on_this_day=False, latitude=None, longitude=None, googly_chance=0.0):
     """Second source: Cleveland Museum of Art open access (keyless, CC0). Its API carries
     a real 'description', so 'real' captions need no scraping."""
     os.makedirs(TMP, exist_ok=True); LAST_PIECES.clear()
@@ -878,7 +879,7 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
                 continue
             art = Image.open(io.BytesIO(r.content)).convert("RGB")
             p = os.path.join(TMP, f"{len(paths)+1:02d}_{slug(meta['title'])}.jpg")
-            caption_style, caption = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("url"), real_text=o.get("description"), googly=googly)
+            caption_style, caption = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("url"), real_text=o.get("description"), googly_chance=googly_chance)
             paths.append(p)
             LAST_PIECES.append({"title": meta["title"], "artist": name or meta["culture"] or "Unknown",
                                 "url": o.get("url") or "", "source": CLE_NAME, "id": f"cle:{o.get('id')}",
@@ -891,14 +892,15 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
             print(f"  ! skip {o.get('id')}: {str(e)[:120]}", file=sys.stderr)
     return paths
 
-def prep_local(files, mat_rgb, googly=False):
+def prep_local(files, mat_rgb, googly_chance=0.0):
     os.makedirs(TMP, exist_ok=True)
     out = []
     for f in files:
         im = Image.open(f).convert("RGB")
-        if googly:
+        googlied = bool(googly_chance) and random.random() < googly_chance
+        if googlied:
             im = add_googly_eyes(im)
-        if googly or im.size != CANVAS:
+        if googlied or im.size != CANVAS:
             p = os.path.join(TMP, f"local_{slug(os.path.basename(f))}.jpg")
             mat_image(im, mat_rgb).save(p, "JPEG", quality=JPEG_Q); out.append(p)
         else:
@@ -930,11 +932,11 @@ def _fetch_source(args, mat_rgb, count):
         return fetch_cleveland(count, args.query, mat_rgb, args.theme, args.placard,
                                args.describe, args.types, args.qr, args.tone, avoid,
                                args.seasonal, args.hemisphere, args.all_types, args.subject, args.holidays,
-                               args.weather, args.on_this_day, args.latitude, args.longitude, args.googly)
+                               args.weather, args.on_this_day, args.latitude, args.longitude, args.googly_chance)
     return fetch_matted(count, args.query, mat_rgb, args.theme, args.placard, args.all_types,
                         args.describe, args.types, args.qr, args.tone, avoid, args.seasonal,
                         args.hemisphere, args.subject, args.holidays,
-                        args.weather, args.on_this_day, args.latitude, args.longitude, args.googly)
+                        args.weather, args.on_this_day, args.latitude, args.longitude, args.googly_chance)
 
 FAV_CHANCE = 0.2   # chance a scheduled run re-shows a favourite instead of fresh art
 
@@ -943,7 +945,7 @@ def _gather(args, mat_rgb, count):
     and used as a graceful fallback if fresh art can't be fetched. Preview and an explicit
     'change now' (--force) always fetch fresh; only automatic runs re-show favourites."""
     if args.files:
-        return prep_local(args.files, mat_rgb, args.googly)
+        return prep_local(args.files, mat_rgb, args.googly_chance)
     if not args.preview and not args.force and random.random() < FAV_CHANCE:
         fav = favourite_pick()
         if fav:
@@ -1134,8 +1136,11 @@ def main():
                     help="latitude for --weather (falls back to IP geolocation if unset)")
     ap.add_argument("--longitude", type=float, default=cfg.get("longitude"),
                     help="longitude for --weather (falls back to IP geolocation if unset)")
-    ap.add_argument("--googly", action=argparse.BooleanOptionalAction, default=cfg.get("googly", False),
-                    help="stick cartoon googly eyes on detected faces (needs opencv)")
+    ap.add_argument("--googly", action=argparse.BooleanOptionalAction, default=None,
+                    help="always/never add googly eyes to faces (shortcut for --googly-chance 1/0; needs opencv)")
+    ap.add_argument("--googly-chance", dest="googly_chance", type=float,
+                    default=cfg.get("googly_chance", 1.0 if cfg.get("googly") else 0.0),
+                    help="probability 0..1 that a piece gets cartoon googly eyes on its faces")
     ap.add_argument("--preview", default=None, metavar="PATH",
                     help="render one image to PATH and exit — does not touch the TV")
     ap.add_argument("--force", action="store_true", help="change the art even if pinned")
@@ -1152,6 +1157,9 @@ def main():
     ap.add_argument("--no-wake", action="store_true", help="skip the WoL/wake step")
     ap.add_argument("--upload-retries", type=int, default=3, help="retries per image on transient errors")
     args = ap.parse_args()
+    if args.googly is not None:                       # --googly / --no-googly override the chance
+        args.googly_chance = 1.0 if args.googly else 0.0
+    args.googly_chance = min(1.0, max(0.0, args.googly_chance or 0.0))
     try:
         run(args)
     except Exception as e:

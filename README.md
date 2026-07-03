@@ -66,7 +66,8 @@ to the genuine museum page.
 - **On this day.** Optionally tie the art to a real historical event from today's date (drawn
   from Wikipedia's *On this day*).
 - **Googly eyes.** Just for fun: detect any faces in the art and slap cartoon googly eyes on
-  them. (Optional — needs `opencv-python-headless`, installed by default.)
+  them — as often as you like (**Never / Rarely / Sometimes / Always**), so they're a surprise
+  rather than every day. (Optional — needs `opencv-python-headless`, installed by default.)
 - **Mission-control dashboard.** See what's on the TV now, when it last changed, and whether the
   last run worked — plus **Pin** (hold a piece), **Ban** (never show it again) and no-repeats.
 - **Seasonal mode.** Optionally bias the art to the season (hemisphere-aware).
@@ -140,7 +141,8 @@ When the installer finishes it prints a link — open it on any phone or laptop 
 - **Content:** the whole museum, a single genre, a genre-a-day cycle, or *"only show art of
   cats"*. Match the season, the live weather, or a historical event *on this day*; celebrate
   holidays. Pick the museum (the Met, Cleveland, or either).
-- **Googly eyes** — a toggle to stick cartoon eyes on any faces in the art, just for fun.
+- **Googly eyes** — cartoon eyes on any faces in the art, set to turn up Never / Rarely /
+  Sometimes / Always, just for fun.
 - **Object types**, **mat colour**, and a **QR-code** toggle.
 - **How often & when** the art changes — the panel builds the schedule for you (launchd on
   macOS, cron on Linux).
