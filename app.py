@@ -93,14 +93,14 @@ def flags_from(cfg):
     f += ["--placard"] if cfg.get("placard", True) else ["--no-placard"]
     f += ["--qr"] if cfg.get("qr", True) else ["--no-qr"]
     f += ["--replace"] if cfg.get("replace", True) else ["--no-replace"]
-    f += ["--seasonal"] if cfg.get("seasonal") else ["--no-seasonal"]
-    f += ["--holidays"] if cfg.get("holidays") else ["--no-holidays"]
-    f += ["--weather"] if cfg.get("weather") else ["--no-weather"]
-    f += ["--on-this-day"] if cfg.get("on_this_day") else ["--no-on-this-day"]
-    gc = cfg.get("googly_chance")
-    if gc is None:
-        gc = 1.0 if cfg.get("googly") else 0.0
-    f += ["--googly-chance", str(gc)]
+    # per-run "chance" modes — fall back to the legacy on/off bool if no chance is stored yet
+    for cli, key in (("--seasonal-chance", "seasonal"), ("--holidays-chance", "holidays"),
+                     ("--weather-chance", "weather"), ("--on-this-day-chance", "on_this_day"),
+                     ("--googly-chance", "googly")):
+        ch = cfg.get(key + "_chance")
+        if ch is None:
+            ch = 1.0 if cfg.get(key) else 0.0
+        f += [cli, str(ch)]
     f += ["--hemisphere", cfg.get("hemisphere", "north")]
     if cfg.get("latitude") is not None and cfg.get("longitude") is not None:
         f += ["--latitude", str(cfg["latitude"]), "--longitude", str(cfg["longitude"])]
@@ -423,15 +423,24 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  </select>
  <label class="f" style="margin-top:16px">Only show art of… <span class="sub">— optional; combines with season/holidays (e.g. cats at Christmas → Christmas cats)</span></label>
  <input type="text" id="subject" placeholder="cats, dogs, dragons… — leave blank for none" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px">
- <label class="chk" style="margin-top:14px"><input type="checkbox" id="seasonal">
-   <span>Match the season <span class="sub">— bias to snow, blossom, harvest…</span></span></label>
- <label class="chk" style="margin-top:14px"><input type="checkbox" id="holidays">
-   <span>Celebrate holidays <span class="sub">— spooky art at Halloween, nativity at Christmas…</span></span></label>
- <label class="chk" style="margin-top:14px"><input type="checkbox" id="weather">
-   <span>Match today's weather <span class="sub">— rain, snow or sunshine, from your local forecast</span></span></label>
- <label class="chk" style="margin-top:14px"><input type="checkbox" id="on_this_day">
-   <span>On this day <span class="sub">— art tied to a historical event from today's date</span></span></label>
- <div class="voicerow" id="googly" data-w="0" style="margin-top:14px">
+ <label class="f" style="margin-top:16px">How often to spice things up <span class="sub">— each rolls its own dice per change</span></label>
+ <div class="voicerow chancerow" id="seasonal" data-w="0">
+   <span class="vname">Match the season <span class="sub">— snow, blossom, harvest…</span></span>
+   <div class="lvl"><button data-w="0">Never</button><button data-w="0.2">Rarely</button><button data-w="0.5">Sometimes</button><button data-w="1">Always</button></div>
+ </div>
+ <div class="voicerow chancerow" id="holidays" data-w="0">
+   <span class="vname">Celebrate holidays <span class="sub">— spooky at Halloween, nativity at Christmas…</span></span>
+   <div class="lvl"><button data-w="0">Never</button><button data-w="0.2">Rarely</button><button data-w="0.5">Sometimes</button><button data-w="1">Always</button></div>
+ </div>
+ <div class="voicerow chancerow" id="weather" data-w="0">
+   <span class="vname">Match today's weather <span class="sub">— rain, snow or sunshine, from your forecast</span></span>
+   <div class="lvl"><button data-w="0">Never</button><button data-w="0.2">Rarely</button><button data-w="0.5">Sometimes</button><button data-w="1">Always</button></div>
+ </div>
+ <div class="voicerow chancerow" id="on_this_day" data-w="0">
+   <span class="vname">On this day <span class="sub">— a historical event from today's date</span></span>
+   <div class="lvl"><button data-w="0">Never</button><button data-w="0.2">Rarely</button><button data-w="0.5">Sometimes</button><button data-w="1">Always</button></div>
+ </div>
+ <div class="voicerow chancerow" id="googly" data-w="0">
    <span class="vname">Googly eyes <span class="sub">— cartoon eyes on any faces, just for fun</span></span>
    <div class="lvl"><button data-w="0">Never</button><button data-w="0.2">Rarely</button><button data-w="0.5">Sometimes</button><button data-w="1">Always</button></div>
  </div>
@@ -520,9 +529,7 @@ setSeg(cfg.description);
 el.content.value=cfg.content; el.all_types.checked=!!cfg.all_types; el.frequency.value=cfg.frequency;
 el.time.value=cfg.time; el.mat.value=cfg.mat; el.mac.value=cfg.mac||''; el.qr.checked=cfg.qr!==false;
 el.source.value=cfg.source||'met'; el.ntfy_topic.value=cfg.ntfy_topic||'';
-el.seasonal.checked=!!cfg.seasonal; el.hemisphere.value=cfg.hemisphere||'north';
-el.holidays.checked=!!cfg.holidays; el.subject.value=cfg.subject||'';
-el.weather.checked=!!cfg.weather; el.on_this_day.checked=!!cfg.on_this_day;
+el.hemisphere.value=cfg.hemisphere||'north'; el.subject.value=cfg.subject||'';
 el.latitude.value=(cfg.latitude!=null?cfg.latitude:''); el.longitude.value=(cfg.longitude!=null?cfg.longitude:'');
 el.placard.checked=cfg.placard!==false;
 // per-voice frequency levels (Off/Rarely/Normal/Often -> weight 0/0.35/1/2.5)
@@ -536,10 +543,15 @@ function voiceRow(t){return document.querySelector('.voicerow[data-tone="'+t+'"]
     setVoice(row,w);
     row.querySelectorAll('.lvl button').forEach(b=>b.onclick=()=>setVoice(row,parseFloat(b.dataset.w)));
   });})();
-// googly eyes: same Never/Rarely/Sometimes/Always scale (chance 0/0.2/0.5/1)
-(function(){const gc=cfg.googly_chance!=null?cfg.googly_chance:(cfg.googly?1:0);
-  setVoice(el.googly,[0,0.2,0.5,1].reduce((a,b)=>Math.abs(b-gc)<Math.abs(a-gc)?b:a));
-  el.googly.querySelectorAll('.lvl button').forEach(b=>b.onclick=()=>setVoice(el.googly,parseFloat(b.dataset.w)));})();
+// per-run "chance" rows: Never/Rarely/Sometimes/Always -> 0/0.2/0.5/1
+const CH=[0,0.2,0.5,1];
+[['seasonal',cfg.seasonal_chance,cfg.seasonal],['holidays',cfg.holidays_chance,cfg.holidays],
+ ['weather',cfg.weather_chance,cfg.weather],['on_this_day',cfg.on_this_day_chance,cfg.on_this_day],
+ ['googly',cfg.googly_chance,cfg.googly]].forEach(([id,ch,legacy])=>{
+  const c = ch!=null?ch:(legacy?1:0); const row=$(id);
+  setVoice(row,CH.reduce((a,b)=>Math.abs(b-c)<Math.abs(a-c)?b:a));
+  row.querySelectorAll('.lvl button').forEach(b=>b.onclick=()=>setVoice(row,parseFloat(b.dataset.w)));
+});
 syncPlacard();
 const chosen=new Set(cfg.types||[]);
 document.querySelectorAll('.tcheck').forEach(c=>c.checked=chosen.has(c.dataset.type));
@@ -550,8 +562,9 @@ function collect(){return {description:document.querySelector('#description butt
   qr:el.qr.checked, placard:el.placard.checked,
   tone:[...document.querySelectorAll('#tonegrid .voicerow')].filter(r=>parseFloat(r.dataset.w)>0).map(r=>r.dataset.tone),
   tone_weights:Object.fromEntries([...document.querySelectorAll('#tonegrid .voicerow')].filter(r=>parseFloat(r.dataset.w)>0).map(r=>[r.dataset.tone,parseFloat(r.dataset.w)])),
-  seasonal:el.seasonal.checked, holidays:el.holidays.checked, subject:el.subject.value.trim(),
-  weather:el.weather.checked, on_this_day:el.on_this_day.checked,
+  subject:el.subject.value.trim(),
+  seasonal_chance:parseFloat(el.seasonal.dataset.w||'0'), holidays_chance:parseFloat(el.holidays.dataset.w||'0'),
+  weather_chance:parseFloat(el.weather.dataset.w||'0'), on_this_day_chance:parseFloat(el.on_this_day.dataset.w||'0'),
   googly_chance:parseFloat(el.googly.dataset.w||'0'),
   latitude:el.latitude.value.trim()===''?null:parseFloat(el.latitude.value),
   longitude:el.longitude.value.trim()===''?null:parseFloat(el.longitude.value),

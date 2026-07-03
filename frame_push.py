@@ -228,6 +228,7 @@ DEFAULTS = {"mac": "", "ip": None, "description": "made-up", "content": "museum"
             "ntfy_topic": "", "tone": ["whimsical"], "source": "met", "orientation": "landscape",
             "pinned": False, "seasonal": False, "hemisphere": "north",
             "subject": "", "holidays": False, "weather": False, "on_this_day": False,
+            "seasonal_chance": 0.0, "holidays_chance": 0.0, "weather_chance": 0.0, "on_this_day_chance": 0.0,
             "googly": False, "googly_chance": 0.0, "latitude": None, "longitude": None, "tone_weights": {}}
 _TONE_WEIGHTS = None   # per-run override for made-up-voice weights (set from --tone-weights), else config's
 STATUS = os.path.join(CFG, "status.json")   # last-run outcome, for alerts + the dashboard
@@ -925,18 +926,27 @@ def favourite_pick():
     LAST_PIECES.append({k: fav.get(k, "") for k in ("title", "artist", "url", "source", "id")})
     return fav["file"]
 
+def _roll(chance):
+    """True with probability `chance` (0..1) — how a per-run bias mode fires."""
+    return random.random() < (chance or 0.0)
+
 def _fetch_source(args, mat_rgb, count):
     avoid = {str(x) for x in _load_list(BLOCKLIST)} | {str(h.get("id")) for h in _load_list(HISTORY)[-40:]}
     src = random.choice(["met", "cleveland"]) if args.source == "any" else args.source
+    # Each bias mode is rolled once per run against its configured chance.
+    seasonal    = _roll(args.seasonal_chance)
+    holidays    = _roll(args.holidays_chance)
+    weather     = _roll(args.weather_chance)
+    on_this_day = _roll(args.on_this_day_chance)
     if src == "cleveland":
         return fetch_cleveland(count, args.query, mat_rgb, args.theme, args.placard,
                                args.describe, args.types, args.qr, args.tone, avoid,
-                               args.seasonal, args.hemisphere, args.all_types, args.subject, args.holidays,
-                               args.weather, args.on_this_day, args.latitude, args.longitude, args.googly_chance)
+                               seasonal, args.hemisphere, args.all_types, args.subject, holidays,
+                               weather, on_this_day, args.latitude, args.longitude, args.googly_chance)
     return fetch_matted(count, args.query, mat_rgb, args.theme, args.placard, args.all_types,
-                        args.describe, args.types, args.qr, args.tone, avoid, args.seasonal,
-                        args.hemisphere, args.subject, args.holidays,
-                        args.weather, args.on_this_day, args.latitude, args.longitude, args.googly_chance)
+                        args.describe, args.types, args.qr, args.tone, avoid, seasonal,
+                        args.hemisphere, args.subject, holidays,
+                        weather, on_this_day, args.latitude, args.longitude, args.googly_chance)
 
 FAV_CHANCE = 0.2   # chance a scheduled run re-shows a favourite instead of fresh art
 
@@ -1119,19 +1129,30 @@ def main():
                     help="voice(s) for made-up captions, comma-separated; one is picked at random")
     ap.add_argument("--tone-weights", dest="tone_weights", type=json.loads, default=None,
                     help="JSON map of voice->relative weight, e.g. '{\"pirate\":2.5,\"noir\":0.35}'")
-    ap.add_argument("--seasonal", action=argparse.BooleanOptionalAction, default=cfg.get("seasonal", False),
-                    help="bias art to the current season")
+    ap.add_argument("--seasonal", action=argparse.BooleanOptionalAction, default=None,
+                    help="always/never bias art to the current season (shortcut for --seasonal-chance 1/0)")
+    ap.add_argument("--seasonal-chance", dest="seasonal_chance", type=float,
+                    default=cfg.get("seasonal_chance", 1.0 if cfg.get("seasonal") else 0.0),
+                    help="probability 0..1 that a run leans seasonal")
     ap.add_argument("--hemisphere", choices=["north", "south"], default=cfg.get("hemisphere", "north"),
                     help="which hemisphere's seasons to use")
     ap.add_argument("--subject", default=cfg.get("subject", ""),
                     help="only show art of this subject, e.g. 'cats' (overrides content/season)")
-    ap.add_argument("--holidays", action=argparse.BooleanOptionalAction, default=cfg.get("holidays", False),
-                    help="theme the art around nearby holidays (Halloween, Christmas…)")
-    ap.add_argument("--weather", action=argparse.BooleanOptionalAction, default=cfg.get("weather", False),
-                    help="bias art to the live local weather (open-meteo, keyless)")
-    ap.add_argument("--on-this-day", dest="on_this_day", action=argparse.BooleanOptionalAction,
-                    default=cfg.get("on_this_day", False),
-                    help="bias art to a historical event from today's date (Wikipedia)")
+    ap.add_argument("--holidays", action=argparse.BooleanOptionalAction, default=None,
+                    help="always/never theme art around nearby holidays (shortcut for --holidays-chance 1/0)")
+    ap.add_argument("--holidays-chance", dest="holidays_chance", type=float,
+                    default=cfg.get("holidays_chance", 1.0 if cfg.get("holidays") else 0.0),
+                    help="probability 0..1 that a run leans to a nearby holiday (Halloween, Christmas…)")
+    ap.add_argument("--weather", action=argparse.BooleanOptionalAction, default=None,
+                    help="always/never bias art to the live local weather (shortcut for --weather-chance 1/0)")
+    ap.add_argument("--weather-chance", dest="weather_chance", type=float,
+                    default=cfg.get("weather_chance", 1.0 if cfg.get("weather") else 0.0),
+                    help="probability 0..1 that a run matches the live local weather (open-meteo, keyless)")
+    ap.add_argument("--on-this-day", dest="on_this_day", action=argparse.BooleanOptionalAction, default=None,
+                    help="always/never bias to a historical event from today's date (shortcut for --on-this-day-chance 1/0)")
+    ap.add_argument("--on-this-day-chance", dest="on_this_day_chance", type=float,
+                    default=cfg.get("on_this_day_chance", 1.0 if cfg.get("on_this_day") else 0.0),
+                    help="probability 0..1 that a run ties art to a historical event today (Wikipedia)")
     ap.add_argument("--latitude", type=float, default=cfg.get("latitude"),
                     help="latitude for --weather (falls back to IP geolocation if unset)")
     ap.add_argument("--longitude", type=float, default=cfg.get("longitude"),
@@ -1157,9 +1178,11 @@ def main():
     ap.add_argument("--no-wake", action="store_true", help="skip the WoL/wake step")
     ap.add_argument("--upload-retries", type=int, default=3, help="retries per image on transient errors")
     args = ap.parse_args()
-    if args.googly is not None:                       # --googly / --no-googly override the chance
-        args.googly_chance = 1.0 if args.googly else 0.0
-    args.googly_chance = min(1.0, max(0.0, args.googly_chance or 0.0))
+    for name in ("seasonal", "holidays", "weather", "on_this_day", "googly"):
+        b = getattr(args, name)                       # the --x / --no-x boolean shortcut, if given
+        if b is not None:
+            setattr(args, name + "_chance", 1.0 if b else 0.0)
+        setattr(args, name + "_chance", min(1.0, max(0.0, getattr(args, name + "_chance") or 0.0)))
     try:
         run(args)
     except Exception as e:

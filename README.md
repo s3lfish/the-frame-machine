@@ -57,20 +57,19 @@ to the genuine museum page.
   gossip, dad-jokes, fairytale. Tick several; one is picked at random each time.
 - **Favourites & graceful fallback.** ♥ a piece and it reappears more often — and if fresh art
   ever can't be fetched, the Frame quietly re-shows a favourite instead of going blank.
-- **Subject & holiday modes.** Ask for "only show art of cats" (or dogs, dragons, anything),
-  or let it get festive — spooky art near Halloween, nativities at Christmas, hearts for
-  Valentine's.
-- **Weather-reactive.** Optionally match the art to your live local weather — rain, snow or
-  sunshine — via [open-meteo](https://open-meteo.com) (keyless; auto-locates by IP, or set
-  coordinates).
-- **On this day.** Optionally tie the art to a real historical event from today's date (drawn
-  from Wikipedia's *On this day*).
-- **Googly eyes.** Just for fun: detect any faces in the art and slap cartoon googly eyes on
-  them — as often as you like (**Never / Rarely / Sometimes / Always**), so they're a surprise
-  rather than every day. (Optional — needs `opencv-python-headless`, installed by default.)
-- **Mission-control dashboard.** See what's on the TV now, when it last changed, and whether the
-  last run worked — plus **Pin** (hold a piece), **Ban** (never show it again) and no-repeats.
-- **Seasonal mode.** Optionally bias the art to the season (hemisphere-aware).
+- **Subject mode.** Ask for "only show art of cats" (or dogs, dragons, anything).
+- **Spice modes, dialed to taste.** Each of these can be set to turn up **Never / Rarely /
+  Sometimes / Always**, so they're an occasional surprise rather than every single day:
+  - **Match the season** (hemisphere-aware) — snow, blossom, harvest…
+  - **Celebrate holidays** — spooky art near Halloween, nativities at Christmas, hearts for Valentine's.
+  - **Match today's weather** — rain, snow or sunshine, via [open-meteo](https://open-meteo.com)
+    (keyless; auto-locates by IP, or set coordinates).
+  - **On this day** — art tied to a real historical event from today's date (Wikipedia's *On this day*).
+  - **Googly eyes** — detect any faces in the art and slap cartoon googly eyes on them, just for
+    fun. (Optional — needs `opencv-python-headless`, installed by default.)
+- **Mission-control dashboard.** See what's on the TV now — full details (date, medium,
+  dimensions, credit) and the caption text — when it last changed, and whether the last run
+  worked; plus **Pin** (hold a piece), **Ban** (never show it again) and no-repeats.
 - **Phone alerts.** Get an [ntfy](https://ntfy.sh) push if a run ever fails. Optional panel password.
 
 ## Requirements
@@ -139,10 +138,9 @@ When the installer finishes it prints a link — open it on any phone or laptop 
   turns up — **Off / Rarely / Normal / Often** — so you can dial back the ones you don't love
   without losing them entirely. The panel also shows which voice wrote the current caption.
 - **Content:** the whole museum, a single genre, a genre-a-day cycle, or *"only show art of
-  cats"*. Match the season, the live weather, or a historical event *on this day*; celebrate
-  holidays. Pick the museum (the Met, Cleveland, or either).
-- **Googly eyes** — cartoon eyes on any faces in the art, set to turn up Never / Rarely /
-  Sometimes / Always, just for fun.
+  cats"*. Pick the museum (the Met, Cleveland, or either).
+- **Spice modes** — season, holidays, live weather, *on this day*, and googly eyes — each set to
+  **Never / Rarely / Sometimes / Always** so they turn up as often (or as rarely) as you like.
 - **Object types**, **mat colour**, and a **QR-code** toggle.
 - **How often & when** the art changes — the panel builds the schedule for you (launchd on
   macOS, cron on Linux).
