@@ -328,6 +328,10 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #save{background:#303033;color:var(--ink)} #prev{background:#303033;color:var(--ink)}
  #now{background:var(--accent);color:#1c1c1e;border-color:var(--accent)}
  #status{min-height:20px;margin:12px 2px;color:var(--sub);font-size:14px}
+ .spin{display:inline-block;width:1em;height:1em;border:2px solid currentColor;border-right-color:transparent;
+   border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:7px;opacity:.85}
+ @keyframes spin{to{transform:rotate(360deg)}}
+ button:disabled{opacity:.7;cursor:progress}
  img#pv{width:100%;border-radius:12px;margin-top:12px;display:none;border:1px solid var(--line)}
  details summary{cursor:pointer;color:var(--sub)} details input{margin-top:8px}
  .nowrow{display:flex;gap:16px;align-items:flex-start}
@@ -518,18 +522,19 @@ function collect(){return {description:document.querySelector('#description butt
   hemisphere:el.hemisphere.value, ntfy_topic:el.ntfy_topic.value.trim(), password:el.password.value,
   frequency:el.frequency.value, time:el.time.value, mat:el.mat.value,
   mac:el.mac.value.trim(), replace:true};}
-async function post(url,btn,label){el.status.textContent=label+'…';
-  const old=btn.textContent; btn.disabled=true;
+async function post(url,btn,label,working){el.status.textContent=label+'…';
+  const old=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spin"></span>'+(working||'Working')+'…';
   try{const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(collect())});
     const j=await r.json(); el.status.textContent=j.message||(j.ok?'Done.':'Something went wrong.');
     if(j.image){el.pv.src=j.image;el.pv.style.display='block';}
-  }catch(e){el.status.textContent='Error: '+e;} btn.disabled=false;btn.textContent=old;}
-el.save.onclick=()=>post('/save',el.save,'Saving');
-el.prev.onclick=()=>post('/preview',el.prev,'Rendering a preview (can take ~20s)');
-el.now.onclick=async()=>{await post('/change-now',el.now,'Changing the art on your TV (can take a minute)');loadState();};
-el.nowtop.onclick=async()=>{await post('/change-now',el.nowtop,'Changing the art on your TV (can take a minute)');loadState();};
-async function nav(url,btn){el.status.textContent='Switching…';btn.disabled=true;const o=btn.textContent;
-  const j=await (await fetch(url,{method:'POST'})).json();el.status.textContent=j.message;btn.disabled=false;btn.textContent=o;loadState();}
+  }catch(e){el.status.textContent='Error: '+e;} btn.disabled=false;btn.innerHTML=old;}
+el.save.onclick=()=>post('/save',el.save,'Saving','Saving');
+el.prev.onclick=()=>post('/preview',el.prev,'Rendering a preview (can take ~20s)','Rendering');
+el.now.onclick=async()=>{await post('/change-now',el.now,'Changing the art on your TV (can take a minute)','Changing');loadState();};
+el.nowtop.onclick=async()=>{await post('/change-now',el.nowtop,'Changing the art on your TV (can take a minute)','Changing');loadState();};
+async function nav(url,btn){el.status.textContent='Switching…';btn.disabled=true;const o=btn.innerHTML;
+  btn.innerHTML='<span class="spin"></span>…';
+  const j=await (await fetch(url,{method:'POST'})).json();el.status.textContent=j.message;btn.disabled=false;btn.innerHTML=o;loadState();}
 el.back.onclick=()=>nav('/back',el.back);
 el.fwd.onclick=()=>nav('/forward',el.fwd);
 async function loadState(){try{const j=await (await fetch('/state')).json(); const s=j.status||{};
