@@ -260,7 +260,8 @@ def _navigate(step):
     fp.nav_set(new)
     shutil.copy(entry["file"], fp.CURRENT_IMG)
     fp.write_status(True, f"Showing {entry.get('title','art')}",
-                    {k: entry.get(k, "") for k in ("id", "title", "artist", "url", "source", "caption_style")})
+                    {k: entry.get(k, "") for k in ("id", "title", "artist", "url", "source", "caption_style",
+                                                    "caption", "date", "medium", "dimensions", "credit", "culture")})
     return jsonify(ok=True, message=f"{entry.get('title','art')} — {new + 1} of {len(nav)}")
 
 @app.route("/back", methods=["POST"])
@@ -365,7 +366,10 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    <div class="sub" id="laststatus">Loading…</div>
    <div id="nowtitle" style="font-weight:600;margin-top:4px"></div>
    <div class="sub" id="nowmeta"></div>
-   <div class="sub" id="nowstyle" style="margin-top:4px"></div>
+   <div id="nowdetails" style="margin-top:8px;font-size:13px;line-height:1.5"></div>
+   <div id="nowcaption" style="margin-top:10px;font-style:italic;font-size:14px;color:var(--ink);display:none"></div>
+   <div class="sub" id="nowstyle" style="margin-top:8px"></div>
+   <a id="nowlink" href="#" target="_blank" style="display:none;font-size:13px;color:var(--accent)">View at the museum ↗</a>
    <div class="actions" style="margin-top:12px">
     <button id="fav" style="background:#303033;color:var(--ink)">♥ Favourite</button>
     <button id="pin" style="background:#303033;color:var(--ink)">Stop this from changing</button>
@@ -496,6 +500,7 @@ const el = {content:$('content'), source:$('source'), all_types:$('all_types'), 
   frequency:$('frequency'), time:$('time'), mat:$('mat'), mac:$('mac'), status:$('status'), pv:$('pv'),
   save:$('save'), prev:$('prev'), now:$('now'), historylist:$('historylist'),
   cur:$('cur'), laststatus:$('laststatus'), nowtitle:$('nowtitle'), nowmeta:$('nowmeta'),
+  nowdetails:$('nowdetails'), nowcaption:$('nowcaption'), nowlink:$('nowlink'),
   nowstyle:$('nowstyle'), dropvoice:$('dropvoice'),
   pin:$('pin'), ban:$('ban'), fav:$('fav'), nowtop:$('nowtop'), back:$('back'), fwd:$('fwd')};
 function setSeg(val){document.querySelectorAll('#description button').forEach(b=>b.classList.toggle('on',b.dataset.v===val));
@@ -562,6 +567,12 @@ async function loadState(){try{const j=await (await fetch('/state')).json(); con
   el.laststatus.textContent=(s.ok===false?'⚠ Last run failed: ':'Now showing · ')+(s.message||'');
   el.nowtitle.textContent=s.title?(s.title+(s.artist?(' — '+s.artist):'')):'';
   el.nowmeta.textContent=[s.source,s.when&&s.when.replace('T',' ')].filter(Boolean).join(' · ');
+  const esc=t=>String(t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  const rows=[['Date',s.date],['Medium',s.medium],['Dimensions',s.dimensions],['Culture',s.culture],['Credit',s.credit]]
+    .filter(([k,v])=>v);
+  el.nowdetails.innerHTML=rows.map(([k,v])=>`<div><span style="opacity:.55">${k}:</span> ${esc(v)}</div>`).join('');
+  el.nowcaption.textContent=s.caption||''; el.nowcaption.style.display=s.caption?'block':'none';
+  if(s.url){el.nowlink.href=s.url;el.nowlink.style.display='inline-block';}else{el.nowlink.style.display='none';}
   const style=s.caption_style||'';
   el.nowstyle.textContent=style?('Made-up voice: '+style):'';
   el.dropvoice.textContent=style?('Drop “'+style+'” voice'):'Drop this voice';

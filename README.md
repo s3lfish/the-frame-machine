@@ -130,6 +130,9 @@ When the installer finishes it prints a link — open it on any phone or laptop 
 (e.g. `http://your-host.local:8080`). Everything lives here; no config files, no command line:
 
 - **Change the art now**, or step **◀ Back / Forward ▶** through the last ~40 pieces, right at the top.
+- **Full details for the current piece** — title, artist, date, medium, dimensions, culture and
+  credit line, the caption text itself, and a link to the museum page — so you can read it all in
+  the app without walking over to the TV.
 - **Caption:** none, the museum's own real caption, or a made-up tale — in ~18 voices (pirate,
   noir, Shakespearean, Attenborough, topical…), one picked each time. Set how often each voice
   turns up — **Off / Rarely / Normal / Often** — so you can dial back the ones you don't love

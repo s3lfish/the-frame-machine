@@ -694,7 +694,7 @@ def _render_piece(art, meta, mat_rgb, path, placard, describe, qr, tone, page_ur
     link = page_url if (placard and describe != "off" and qr) else None
     canvas = mat_with_placard(art, meta, mat_rgb, desc, link) if placard else mat_image(art, mat_rgb)
     canvas.save(path, "JPEG", quality=JPEG_Q)
-    return caption_style   # which made-up voice was used (None for real/off), so the panel can show it
+    return caption_style, desc   # voice used (None for real/off) + the caption text, for the panel
 
 def plan_search(query, theme):
     """Return (terms_to_search, required_artists). required_artists is a lowercased
@@ -805,12 +805,15 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
                     "culture": culture, "objectName": o.get("objectName"), "culture_period": cp,
                     "credit": o.get("creditLine"), "museum": "The Metropolitan Museum of Art"}
             p = os.path.join(TMP, f"{len(paths)+1:02d}_{slug(o.get('title','art'))}.jpg")
-            caption_style = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("objectURL"), scrape=True, googly=googly)
+            caption_style, caption = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("objectURL"), scrape=True, googly=googly)
             paths.append(p)
             LAST_PIECES.append({"title": o.get("title") or "", "source": o.get("_source_name", "The Met"),
                                 "artist": o.get("artistDisplayName") or o.get("culture") or "Unknown",
                                 "url": o.get("objectURL") or "", "id": f"met:{o.get('objectID')}",
-                                "caption_style": caption_style or ""})
+                                "caption_style": caption_style or "", "caption": caption or "",
+                                "date": meta.get("date") or "", "medium": meta.get("medium") or "",
+                                "dimensions": meta.get("dimensions") or "", "credit": meta.get("credit") or "",
+                                "culture": meta.get("culture_period") or meta.get("culture") or ""})
             print(f"  prepped: {o.get('title','?')} — {o.get('artistDisplayName') or o.get('culture') or 'Unknown'}")
         except Exception as e:
             print(f"  ! skip {oid}: {str(e)[:120]}", file=sys.stderr)
@@ -875,11 +878,14 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
                 continue
             art = Image.open(io.BytesIO(r.content)).convert("RGB")
             p = os.path.join(TMP, f"{len(paths)+1:02d}_{slug(meta['title'])}.jpg")
-            caption_style = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("url"), real_text=o.get("description"), googly=googly)
+            caption_style, caption = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("url"), real_text=o.get("description"), googly=googly)
             paths.append(p)
             LAST_PIECES.append({"title": meta["title"], "artist": name or meta["culture"] or "Unknown",
                                 "url": o.get("url") or "", "source": CLE_NAME, "id": f"cle:{o.get('id')}",
-                                "caption_style": caption_style or ""})
+                                "caption_style": caption_style or "", "caption": caption or "",
+                                "date": meta.get("date") or "", "medium": meta.get("medium") or "",
+                                "dimensions": meta.get("dimensions") or "", "credit": meta.get("credit") or "",
+                                "culture": meta.get("culture_period") or meta.get("culture") or ""})
             print(f"  prepped: {meta['title']} — {name or meta['culture'] or 'Unknown'}")
         except Exception as e:
             print(f"  ! skip {o.get('id')}: {str(e)[:120]}", file=sys.stderr)
