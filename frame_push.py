@@ -462,11 +462,11 @@ def _maybe_watch(args, reason):
         raise RuntimeError(reason)                       # auto-watch off, or interactive nav/files
     if _watcher_running():
         print("  a watcher is already waiting for the TV.")
-        write_status(False, reason + " A watcher is already waiting to retry.")
+        write_status(False, reason + " A watcher is already waiting to retry.", {"waiting": True})
         return
     if _spawn_watcher(getattr(args, "_argv", [])):
         msg = reason + " Watching for the TV to wake — will retry automatically."
-        print("  " + msg); write_status(False, msg); ntfy_alert("Frame art waiting", msg)
+        print("  " + msg); write_status(False, msg, {"waiting": True}); ntfy_alert("Frame art waiting", msg)
     else:
         raise RuntimeError(reason)
 
@@ -475,6 +475,10 @@ def _watch_loop(args):
     watch_timeout minutes."""
     args._watching = True
     args.watch = False
+    # Once the TV wakes, be extra patient about the art channel warming up (and about
+    # someone accepting the on-TV pairing prompt) — more than a snappy foreground run.
+    args.retries = max(int(getattr(args, "retries", 4) or 4), 6)
+    args.wake_wait = max(int(getattr(args, "wake_wait", 12) or 12), 15)
     interval = max(10, int(getattr(args, "watch_interval", 60) or 60))
     mins = max(1, int(getattr(args, "watch_timeout", 180) or 180))
     deadline = time.time() + mins * 60
@@ -483,7 +487,7 @@ def _watch_loop(args):
         os.makedirs(CFG, exist_ok=True); open(WATCH_PID, "w").write(str(os.getpid()))
     except Exception:
         pass
-    write_status(False, "Waiting for the TV to wake, then it'll change the art.")
+    write_status(False, "Waiting for the TV to wake, then it'll change the art.", {"waiting": True})
     i = 0
     try:
         while time.time() < deadline:
@@ -1284,7 +1288,7 @@ def main():
     ap.add_argument("--replace", action=argparse.BooleanOptionalAction, default=cfg["replace"])
     ap.add_argument("--timeout", type=int, default=30, help="socket timeout (s) so it never hangs")
     ap.add_argument("--wake-wait", type=int, default=12, help="seconds to wait after WoL before probing")
-    ap.add_argument("--retries", type=int, default=3, help="wake+probe attempts")
+    ap.add_argument("--retries", type=int, default=4, help="wake+probe attempts (the watcher is more patient still)")
     ap.add_argument("--no-wake", action="store_true", help="skip the WoL/wake step")
     ap.add_argument("--upload-retries", type=int, default=3, help="retries per image on transient errors")
     ap.add_argument("--watch", action="store_true",

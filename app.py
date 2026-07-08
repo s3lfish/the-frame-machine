@@ -211,8 +211,22 @@ def _read_status():
 def state():
     cfg = fp.load_config()
     return jsonify(status=_read_status(), pinned=bool(cfg.get("pinned")),
-                   has_image=os.path.exists(fp.CURRENT_IMG),
+                   has_image=os.path.exists(fp.CURRENT_IMG), watching=fp._watcher_running(),
                    history=fp._load_list(fp.HISTORY)[-8:][::-1])
+
+@app.route("/stop-watch", methods=["POST"])
+def stop_watch():
+    """Stop a background watcher that's waiting for the TV to wake."""
+    if not fp._watcher_running():
+        return jsonify(ok=False, message="No watcher is running.")
+    try:
+        pid = int(open(fp.WATCH_PID).read().strip())
+        os.kill(pid, 15)
+        os.remove(fp.WATCH_PID)
+    except Exception as e:
+        return jsonify(ok=False, message=f"Couldn't stop it: {str(e)[:120]}")
+    fp.write_status(False, "Stopped waiting for the TV.")
+    return jsonify(ok=True, message="Stopped waiting for the TV.")
 
 @app.route("/current.jpg")
 def current_jpg():
@@ -379,6 +393,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
     <button id="pin" style="background:#303033;color:var(--ink)">Stop this from changing</button>
     <button id="ban" style="background:#303033;color:var(--ink)">Never show again</button>
     <button id="dropvoice" style="background:#303033;color:var(--ink);display:none">Drop this voice</button>
+    <button id="stopwatch" style="background:#303033;color:var(--ink);display:none">Stop waiting</button>
    </div>
   </div>
  </div>
@@ -518,7 +533,7 @@ const el = {content:$('content'), source:$('source'), all_types:$('all_types'), 
   save:$('save'), prev:$('prev'), now:$('now'), historylist:$('historylist'),
   cur:$('cur'), laststatus:$('laststatus'), nowtitle:$('nowtitle'), nowmeta:$('nowmeta'),
   nowdetails:$('nowdetails'), nowcaption:$('nowcaption'), nowlink:$('nowlink'),
-  nowstyle:$('nowstyle'), dropvoice:$('dropvoice'),
+  nowstyle:$('nowstyle'), dropvoice:$('dropvoice'), stopwatch:$('stopwatch'),
   pin:$('pin'), ban:$('ban'), fav:$('fav'), nowtop:$('nowtop'), back:$('back'), fwd:$('fwd')};
 function setSeg(val){document.querySelectorAll('#description button').forEach(b=>b.classList.toggle('on',b.dataset.v===val));
   el.tonerow.style.display = (val==='made-up') ? 'block' : 'none';}
@@ -592,7 +607,11 @@ async function nav(url,btn){el.status.textContent='Switching…';btn.disabled=tr
 el.back.onclick=()=>nav('/back',el.back);
 el.fwd.onclick=()=>nav('/forward',el.fwd);
 async function loadState(){try{const j=await (await fetch('/state')).json(); const s=j.status||{};
-  el.laststatus.textContent=(s.ok===false?'⚠ Last run failed: ':'Now showing · ')+(s.message||'');
+  const waiting = j.watching || s.waiting;
+  el.laststatus.textContent = waiting ? ('⏳ Waiting for the TV to wake — will push as soon as it is on. '+(s.message||''))
+    : (s.ok===false?'⚠ Last run failed: ':'Now showing · ')+(s.message||'');
+  el.laststatus.style.color = waiting ? 'var(--accent)' : (s.ok===false ? '#e0704a' : 'var(--sub)');
+  el.stopwatch.style.display = waiting ? 'inline-block' : 'none';
   el.nowtitle.textContent=s.title?(s.title+(s.artist?(' — '+s.artist):'')):'';
   el.nowmeta.textContent=[s.source,s.when&&s.when.replace('T',' ')].filter(Boolean).join(' · ');
   const esc=t=>String(t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -615,6 +634,7 @@ async function loadState(){try{const j=await (await fetch('/state')).json(); con
 el.pin.onclick=async()=>{const j=await (await fetch('/pin',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
 el.ban.onclick=async()=>{el.status.textContent='Finding a replacement…';const j=await (await fetch('/ban',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
 el.fav.onclick=async()=>{const j=await (await fetch('/favourite',{method:'POST'})).json();el.status.textContent=j.message;};
+el.stopwatch.onclick=async()=>{const j=await (await fetch('/stop-watch',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
 el.dropvoice.onclick=async()=>{const j=await (await fetch('/drop-voice',{method:'POST'})).json();el.status.textContent=j.message;
   if(j.ok&&j.dropped){const row=voiceRow(j.dropped);if(row)setVoice(row,0);}
   loadState();};
