@@ -57,6 +57,9 @@ to the genuine museum page.
   gossip, dad-jokes, fairytale. Tick several; one is picked at random each time.
 - **Favourites & graceful fallback.** ♥ a piece and it reappears more often — and if fresh art
   ever can't be fetched, the Frame quietly re-shows a favourite instead of going blank.
+- **Self-healing when the TV's asleep.** If a scheduled change can't reach the Frame (deep
+  standby is common), it hands off to a background watcher that keeps polling and pushes the
+  moment the TV wakes — so you don't miss a day. (On by default; toggle in the panel's Advanced.)
 - **Subject mode.** Ask for "only show art of cats" (or dogs, dragons, anything).
 - **Spice modes, dialed to taste.** Each of these can be set to turn up **Never / Rarely /
   Sometimes / Always**, so they're an occasional surprise rather than every single day:

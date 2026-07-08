@@ -101,6 +101,7 @@ def flags_from(cfg):
         if ch is None:
             ch = 1.0 if cfg.get(key) else 0.0
         f += [cli, str(ch)]
+    f += ["--watch-on-fail"] if cfg.get("watch_on_fail", True) else ["--no-watch-on-fail"]
     f += ["--hemisphere", cfg.get("hemisphere", "north")]
     if cfg.get("latitude") is not None and cfg.get("longitude") is not None:
         f += ["--latitude", str(cfg["latitude"]), "--longitude", str(cfg["longitude"])]
@@ -488,6 +489,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  <label class="f" style="margin-top:16px">Phone alerts — ntfy topic</label>
  <input type="text" id="ntfy_topic" placeholder="e.g. my-frame-alerts-8b3" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px">
  <p class="sub" style="margin-top:8px">Pick any hard-to-guess word, then subscribe to it in the free <b>ntfy</b> app to get a push if a run ever fails. Leave blank for none.</p>
+ <label class="chk" style="margin-top:16px"><input type="checkbox" id="watch_on_fail">
+   <span>Keep trying if the TV is asleep <span class="sub">— if a change can't reach the TV, keep watching in the background and push as soon as it wakes</span></span></label>
  <label class="f" style="margin-top:16px">Hemisphere <span class="sub">— for “Match the season”</span></label>
  <select id="hemisphere"><option value="north">Northern</option><option value="south">Southern</option></select>
  <label class="f" style="margin-top:16px">Location <span class="sub">— for “Match today's weather”</span></label>
@@ -510,7 +513,7 @@ const el = {content:$('content'), source:$('source'), all_types:$('all_types'), 
   seasonal:$('seasonal'), holidays:$('holidays'), subject:$('subject'), hemisphere:$('hemisphere'),
   weather:$('weather'), on_this_day:$('on_this_day'), googly:$('googly'),
   latitude:$('latitude'), longitude:$('longitude'),
-  ntfy_topic:$('ntfy_topic'), password:$('password'),
+  ntfy_topic:$('ntfy_topic'), password:$('password'), watch_on_fail:$('watch_on_fail'),
   frequency:$('frequency'), time:$('time'), mat:$('mat'), mac:$('mac'), status:$('status'), pv:$('pv'),
   save:$('save'), prev:$('prev'), now:$('now'), historylist:$('historylist'),
   cur:$('cur'), laststatus:$('laststatus'), nowtitle:$('nowtitle'), nowmeta:$('nowmeta'),
@@ -530,6 +533,7 @@ el.content.value=cfg.content; el.all_types.checked=!!cfg.all_types; el.frequency
 el.time.value=cfg.time; el.mat.value=cfg.mat; el.mac.value=cfg.mac||''; el.qr.checked=cfg.qr!==false;
 el.source.value=cfg.source||'met'; el.ntfy_topic.value=cfg.ntfy_topic||'';
 el.hemisphere.value=cfg.hemisphere||'north'; el.subject.value=cfg.subject||'';
+el.watch_on_fail.checked=cfg.watch_on_fail!==false;
 el.latitude.value=(cfg.latitude!=null?cfg.latitude:''); el.longitude.value=(cfg.longitude!=null?cfg.longitude:'');
 el.placard.checked=cfg.placard!==false;
 // per-voice frequency levels (Off/Rarely/Normal/Often -> weight 0/0.35/1/2.5)
@@ -568,7 +572,8 @@ function collect(){return {description:document.querySelector('#description butt
   googly_chance:parseFloat(el.googly.dataset.w||'0'),
   latitude:el.latitude.value.trim()===''?null:parseFloat(el.latitude.value),
   longitude:el.longitude.value.trim()===''?null:parseFloat(el.longitude.value),
-  hemisphere:el.hemisphere.value, ntfy_topic:el.ntfy_topic.value.trim(), password:el.password.value,
+  hemisphere:el.hemisphere.value, watch_on_fail:el.watch_on_fail.checked,
+  ntfy_topic:el.ntfy_topic.value.trim(), password:el.password.value,
   frequency:el.frequency.value, time:el.time.value, mat:el.mat.value,
   mac:el.mac.value.trim(), replace:true};}
 async function post(url,btn,label,working){el.status.textContent=label+'…';

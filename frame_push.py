@@ -13,7 +13,7 @@ Examples:
     python3 frame_push.py --preview /tmp/out.jpg --no-placard      # render only, don't touch the TV
 """
 
-import argparse, io, os, re, json, math, random, subprocess, sys, time, warnings, datetime, html, platform
+import argparse, io, os, re, json, math, random, socket, subprocess, sys, time, warnings, datetime, html, platform
 import requests
 from PIL import Image, ImageDraw, ImageFont
 try:
@@ -229,7 +229,8 @@ DEFAULTS = {"mac": "", "ip": None, "description": "made-up", "content": "museum"
             "pinned": False, "seasonal": False, "hemisphere": "north",
             "subject": "", "holidays": False, "weather": False, "on_this_day": False,
             "seasonal_chance": 0.0, "holidays_chance": 0.0, "weather_chance": 0.0, "on_this_day_chance": 0.0,
-            "googly": False, "googly_chance": 0.0, "latitude": None, "longitude": None, "tone_weights": {}}
+            "googly": False, "googly_chance": 0.0, "latitude": None, "longitude": None, "tone_weights": {},
+            "watch_on_fail": True, "watch_interval": 60, "watch_timeout": 180}
 _TONE_WEIGHTS = None   # per-run override for made-up-voice weights (set from --tone-weights), else config's
 STATUS = os.path.join(CFG, "status.json")   # last-run outcome, for alerts + the dashboard
 HISTORY = os.path.join(CFG, "history.json") # recently displayed pieces (for no-repeats + dashboard)
@@ -399,6 +400,110 @@ def ensure_art_ready(art, mac, wait, retries):
         print(f"  art channel not ready ({i}/{retries}): {last}", file=sys.stderr)
     raise RuntimeError(f"Frame art channel unresponsive after {retries} wake attempts ({last}). "
                        "Enable 'Power On with Mobile' / Wake-on-LAN on the TV, or run when it's awake.")
+
+# ---------- auto-watch: when the TV is asleep, retry the push once it wakes ----------
+WATCH_PID = os.path.join(CFG, "watcher.pid")
+WATCH_LOG = os.path.join(CFG, "watcher.log")
+
+class _Unreachable(RuntimeError):
+    """The Frame's art channel couldn't be reached (asleep / off the LAN)."""
+
+def _port_open(ip, port=8002, timeout=3):
+    """True if a TCP connection to ip:port succeeds — i.e. the art API is actually up
+    (the TV can answer pings in standby while this port stays closed)."""
+    if not ip:
+        return False
+    try:
+        with socket.create_connection((ip, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+def tv_ready(preferred, mac, deep=False):
+    """The TV's IP if its art channel (port 8002) is accepting connections, else None.
+    Fast path probes the known IP; `deep` re-resolves by MAC in case the IP changed."""
+    if _port_open(preferred):
+        return preferred
+    if deep:
+        ip = resolve_frame_ip(preferred, mac)
+        if ip and _port_open(ip):
+            return ip
+    return None
+
+def _watcher_running():
+    """True if a watcher process from a previous run is still alive (avoid duplicates)."""
+    try:
+        pid = int(open(WATCH_PID).read().strip())
+        os.kill(pid, 0)                                  # signal 0 only checks the pid exists
+        return True
+    except Exception:
+        return False
+
+def _spawn_watcher(argv):
+    """Relaunch this script in --watch mode, detached, so it outlives a quick
+    scheduler/panel invocation and keeps polling for the TV."""
+    cmd = [sys.executable, os.path.abspath(__file__), "--watch"] + [a for a in argv if a != "--watch"]
+    try:
+        os.makedirs(CFG, exist_ok=True)
+        log = open(WATCH_LOG, "a")
+        p = subprocess.Popen(cmd, start_new_session=True, stdout=log, stderr=subprocess.STDOUT)
+        open(WATCH_PID, "w").write(str(p.pid))
+        return True
+    except Exception as e:
+        print(f"  ! couldn't start watcher: {str(e)[:100]}", file=sys.stderr)
+        return False
+
+def _maybe_watch(args, reason):
+    """Handle a 'TV unreachable' outcome: hand off to a background watcher that retries
+    when the TV wakes, or (if we ARE the watcher, or it's disabled/interactive) fail."""
+    if getattr(args, "_watching", False):
+        raise _Unreachable(reason)                       # we're the watcher — keep polling
+    if not getattr(args, "watch_on_fail", True) or getattr(args, "no_record", False) or getattr(args, "files", None):
+        raise RuntimeError(reason)                       # auto-watch off, or interactive nav/files
+    if _watcher_running():
+        print("  a watcher is already waiting for the TV.")
+        write_status(False, reason + " A watcher is already waiting to retry.")
+        return
+    if _spawn_watcher(getattr(args, "_argv", [])):
+        msg = reason + " Watching for the TV to wake — will retry automatically."
+        print("  " + msg); write_status(False, msg); ntfy_alert("Frame art waiting", msg)
+    else:
+        raise RuntimeError(reason)
+
+def _watch_loop(args):
+    """Poll until the TV's art channel is up, then do the real push. Gives up after
+    watch_timeout minutes."""
+    args._watching = True
+    args.watch = False
+    interval = max(10, int(getattr(args, "watch_interval", 60) or 60))
+    mins = max(1, int(getattr(args, "watch_timeout", 180) or 180))
+    deadline = time.time() + mins * 60
+    print(f"Watcher up (pid {os.getpid()}): polling every {interval}s for up to {mins} min.")
+    try:
+        os.makedirs(CFG, exist_ok=True); open(WATCH_PID, "w").write(str(os.getpid()))
+    except Exception:
+        pass
+    write_status(False, "Waiting for the TV to wake, then it'll change the art.")
+    i = 0
+    try:
+        while time.time() < deadline:
+            ip = tv_ready(args.ip, args.mac, deep=(i % 5 == 0))
+            if ip:
+                args.ip = ip
+                print("TV art channel is up — pushing now.")
+                try:
+                    return run(args)
+                except _Unreachable:
+                    pass                                 # slipped back to sleep; keep waiting
+            i += 1
+            time.sleep(interval)
+        gave = "Gave up — the TV didn't wake within the watch window."
+        print(gave); write_status(False, gave); ntfy_alert("Frame art gave up", gave)
+    finally:
+        try:
+            os.remove(WATCH_PID)
+        except Exception:
+            pass
 
 # ---------- image prep ----------
 def slug(s, n=50):
@@ -968,6 +1073,8 @@ def _gather(args, mat_rgb, count):
     return paths
 
 def run(args):
+    if getattr(args, "watch", False):                     # watcher mode: wait for the TV, then push
+        return _watch_loop(args)
     mat_rgb = MAT_COLORS[args.mat]
     if getattr(args, "tone_weights", None) is not None:   # live weights from the panel override config's
         global _TONE_WEIGHTS
@@ -994,7 +1101,7 @@ def run(args):
     print("Locating the Frame...")
     ip = resolve_frame_ip(args.ip, args.mac)
     if not ip:
-        raise RuntimeError(f"Frame (MAC {args.mac}) not found on the network. Is it on the LAN?")
+        return _maybe_watch(args, f"Frame (MAC {args.mac}) not found on the network.")
     print(f"Frame at {ip}")
 
     os.makedirs(CFG, exist_ok=True)
@@ -1003,7 +1110,10 @@ def run(args):
 
     if not args.no_wake:
         print("Waking the Frame and waiting for the art channel...")
-        ensure_art_ready(art, args.mac, args.wake_wait, args.retries)
+        try:
+            ensure_art_ready(art, args.mac, args.wake_wait, args.retries)
+        except RuntimeError as e:
+            return _maybe_watch(args, str(e))
         print("Art channel is up.")
 
     print("Preparing images...")
@@ -1177,7 +1287,17 @@ def main():
     ap.add_argument("--retries", type=int, default=3, help="wake+probe attempts")
     ap.add_argument("--no-wake", action="store_true", help="skip the WoL/wake step")
     ap.add_argument("--upload-retries", type=int, default=3, help="retries per image on transient errors")
+    ap.add_argument("--watch", action="store_true",
+                    help="poll until the TV's art channel is up, then push (used by auto-retry)")
+    ap.add_argument("--watch-on-fail", dest="watch_on_fail", action=argparse.BooleanOptionalAction,
+                    default=cfg.get("watch_on_fail", True),
+                    help="if the TV is asleep, keep retrying in the background until it wakes")
+    ap.add_argument("--watch-interval", dest="watch_interval", type=int, default=cfg.get("watch_interval", 60),
+                    help="seconds between polls while waiting for the TV")
+    ap.add_argument("--watch-timeout", dest="watch_timeout", type=int, default=cfg.get("watch_timeout", 180),
+                    help="minutes to keep waiting for the TV before giving up")
     args = ap.parse_args()
+    args._argv = sys.argv[1:]                          # preserved so a spawned watcher repeats this run
     for name in ("seasonal", "holidays", "weather", "on_this_day", "googly"):
         b = getattr(args, name)                       # the --x / --no-x boolean shortcut, if given
         if b is not None:
