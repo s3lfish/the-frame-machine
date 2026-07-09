@@ -11,7 +11,7 @@ for its defaults) and, on macOS, manages the launchd schedule from the frequency
 you pick. Run it with:  python3 app.py   (add --port 8080 to change the port)
 """
 
-import argparse, json, os, platform, shutil, subprocess, sys, tempfile, time
+import argparse, json, os, platform, shutil, subprocess, sys, tempfile, threading, time
 import secrets
 from flask import Flask, request, jsonify, send_file, render_template_string, session, redirect
 
@@ -26,6 +26,33 @@ PLIST = os.path.expanduser(f"~/Library/LaunchAgents/{LABEL}.plist")
 LOG = os.path.expanduser("~/Library/Logs/frameart.log")
 
 app = Flask(__name__)
+
+# ---------- self-check: is our own code still readable? ----------
+# Dropbox/iCloud can evict the project folder to "online-only", after which spawned
+# processes (the scheduled job, the push subprocess, a watcher) can't read frame_push.py
+# and silently fail. Detect that and alert, so it's obvious what to fix.
+_files = {"alerted": False}
+
+def _files_readable():
+    try:
+        with open(SCRIPT, "rb") as f:
+            f.read(1)
+        return True
+    except Exception:
+        return False
+
+def _files_watchdog():
+    while True:
+        ok = _files_readable()
+        if not ok and not _files["alerted"]:
+            fp.ntfy_alert("Frame art: can't read its files",
+                          "The project folder looks evicted to online-only (can't read frame_push.py). "
+                          "Set the Dropbox/iCloud folder to 'Available offline' — scheduled art changes "
+                          "will fail until then.")
+            _files["alerted"] = True
+        elif ok:
+            _files["alerted"] = False
+        time.sleep(600)
 
 # stable secret for signed session cookies (generated once, stored locally)
 _SK = os.path.join(fp.CFG, "secret_key.txt")
@@ -113,29 +140,50 @@ def flags_from(cfg):
     return f
 
 # ---------- schedule (macOS launchd / Linux cron) ----------
-# frequency -> the hour offsets (from the anchor time) at which to fire each day
-FREQ_OFFSETS = {"daily": [0], "twice-daily": [0, 12], "every-8h": [0, 8, 16], "every-6h": [0, 6, 12, 18]}
+# The schedule is an arbitrary interval: `every` N `every_unit` (minutes/hours/days).
+# Exactly "1 day" anchors at a chosen time; everything else fires on a rolling interval.
+_UNIT_MIN = {"minutes": 1, "hours": 60, "days": 1440}
+# Map configs saved before the flexible interval (old `frequency`) to (every, unit).
+_LEGACY_FREQ = {"daily": (1, "days"), "twice-daily": (12, "hours"),
+                "every-8h": (8, "hours"), "every-6h": (6, "hours")}
+
+def schedule_of(cfg):
+    """(interval_minutes, every, unit) for a config, honouring the legacy `frequency`."""
+    if cfg.get("every"):
+        n, unit = int(cfg["every"]), cfg.get("every_unit", "days")
+    else:
+        n, unit = _LEGACY_FREQ.get(cfg.get("frequency", "daily"), (1, "days"))
+    n = max(1, n)
+    unit = unit if unit in _UNIT_MIN else "days"
+    return n * _UNIT_MIN[unit], n, unit
+
+def _every_label(n, unit):
+    return "once a day" if (n == 1 and unit == "days") else f"every {n} {unit[:-1] if n == 1 else unit}"
 
 def write_schedule(cfg):
-    """Regenerate + reload the recurring job from frequency/time (launchd on macOS, cron on Linux)."""
+    """Regenerate + reload the recurring job for any interval (launchd on macOS, cron on Linux)."""
+    interval, n, unit = schedule_of(cfg)
     try:
         hh, mm = map(int, cfg.get("time", "07:30").split(":"))
     except Exception:
         hh, mm = 7, 30
-    offs = FREQ_OFFSETS.get(cfg.get("frequency", "daily"), [0])
-    when = ", ".join(f"{(hh + o) % 24:02d}:{mm:02d}" for o in offs)
+    daily_at_time = (interval == 1440)          # exactly once a day -> anchor at the chosen time
+    when = f"once a day at {hh:02d}:{mm:02d}" if daily_at_time else f"{_every_label(n, unit)}, around the clock"
     sysname = platform.system()
 
     if sysname == "Darwin":
-        ivals = "".join("<dict><key>Hour</key><integer>%d</integer><key>Minute</key><integer>%d</integer></dict>"
-                        % ((hh + o) % 24, mm) for o in offs)
+        if daily_at_time:
+            sched = (f"<key>StartCalendarInterval</key><dict><key>Hour</key><integer>{hh}</integer>"
+                     f"<key>Minute</key><integer>{mm}</integer></dict>")
+        else:
+            sched = f"<key>StartInterval</key><integer>{interval * 60}</integer>"
         plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>{LABEL}</string>
   <key>ProgramArguments</key>
   <array><string>{PYTHON}</string><string>{SCRIPT}</string></array>
-  <key>StartCalendarInterval</key><array>{ivals}</array>
+  {sched}
   <key>StandardOutPath</key><string>{LOG}</string>
   <key>StandardErrorPath</key><string>{LOG}</string>
   <key>RunAtLoad</key><false/>
@@ -146,20 +194,28 @@ def write_schedule(cfg):
         uid = os.getuid()
         subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LABEL}"], capture_output=True)
         r = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", PLIST], capture_output=True, text=True)
-        return f"Saved. The art will change at {when}." if r.returncode == 0 \
+        return f"Saved. The art will change {when}." if r.returncode == 0 \
             else f"Settings saved, but scheduling failed: {r.stderr.strip()[:160]}"
 
     if sysname == "Linux":
+        if daily_at_time:
+            spec = f"{mm} {hh} * * *"
+        elif interval < 60:
+            spec = f"*/{interval} * * * *"
+        elif interval % 60 == 0 and interval // 60 <= 23:
+            spec = f"{mm} */{interval // 60} * * *"
+        else:                                   # cron can't express it exactly — approximate
+            spec = f"*/{min(59, interval)} * * * *" if interval < 1440 else f"{mm} {hh} * * *"
         tag = "# frameart"
-        lines = [f"{mm} {(hh + o) % 24} * * * {PYTHON} {SCRIPT} >> {LOG} 2>&1  {tag}" for o in offs]
+        line = f"{spec} {PYTHON} {SCRIPT} >> {LOG} 2>&1  {tag}"
         try:
             existing = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout.splitlines()
         except Exception:
             existing = []
         kept = [l for l in existing if tag not in l and l.strip()]
-        cron = "\n".join(kept + lines) + "\n"
+        cron = "\n".join(kept + [line]) + "\n"
         r = subprocess.run(["crontab", "-"], input=cron, text=True, capture_output=True)
-        return f"Saved. Cron will change the art at {when}." if r.returncode == 0 \
+        return f"Saved. Cron will change the art {when}." if r.returncode == 0 \
             else f"Settings saved, but cron update failed: {r.stderr.strip()[:160]}"
 
     return "Settings saved. (Automatic scheduling isn't supported on this OS — run frame_push.py on a timer yourself.)"
@@ -212,6 +268,7 @@ def state():
     cfg = fp.load_config()
     return jsonify(status=_read_status(), pinned=bool(cfg.get("pinned")),
                    has_image=os.path.exists(fp.CURRENT_IMG), watching=fp._watcher_running(),
+                   files_ok=_files_readable(),
                    history=fp._load_list(fp.HISTORY)[-8:][::-1])
 
 @app.route("/stop-watch", methods=["POST"])
@@ -368,6 +425,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 </style></head><body><div class="wrap">
 <h1>The Frame Machine</h1>
 <p class="muted">Choose what your Frame shows, and when it changes.</p>
+<div id="filewarn" style="display:none;background:#5a2d2d;border:1px solid #8a4a4a;color:#f3d6d6;padding:12px 14px;border-radius:10px;margin-bottom:16px;font-size:14px">
+ ⚠ Can't read the app's own files — the project folder looks evicted to <b>online-only</b>. In Finder, set the Dropbox/iCloud folder to <b>“Available offline”</b>, or scheduled changes will keep failing.</div>
 
 <div class="actions" style="margin-bottom:10px">
  <button id="back" style="background:#303033;color:var(--ink)">◀ Back</button>
@@ -468,16 +527,16 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 </div>
 
 <div class="card">
- <div class="row">
-   <div><label class="f">Change how often</label>
-     <select id="frequency">
-       <option value="daily">Once a day</option>
-       <option value="twice-daily">Twice a day</option>
-       <option value="every-8h">Every 8 hours</option>
-       <option value="every-6h">Every 6 hours</option>
-     </select></div>
-   <div><label class="f">At (first) time</label><input type="time" id="time"></div>
+ <label class="f">Change the art…</label>
+ <div class="row" style="align-items:flex-end">
+   <div style="flex:0 0 84px"><input type="number" id="every" min="1" step="1" value="1"
+     style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px"></div>
+   <div style="flex:0 0 130px"><select id="every_unit">
+     <option value="minutes">minutes</option><option value="hours">hours</option><option value="days">days</option>
+   </select></div>
+   <div id="attimewrap"><label class="f" style="font-weight:400;color:var(--sub)">at</label><input type="time" id="time"></div>
  </div>
+ <p class="sub" id="schedhint" style="margin-top:8px"></p>
  <div class="row" style="margin-top:14px">
    <div><label class="f">Mat colour</label>
      <select id="mat"><option value="off_white">Off-white</option><option value="linen">Linen</option>
@@ -529,11 +588,12 @@ const el = {content:$('content'), source:$('source'), all_types:$('all_types'), 
   weather:$('weather'), on_this_day:$('on_this_day'), googly:$('googly'),
   latitude:$('latitude'), longitude:$('longitude'),
   ntfy_topic:$('ntfy_topic'), password:$('password'), watch_on_fail:$('watch_on_fail'),
-  frequency:$('frequency'), time:$('time'), mat:$('mat'), mac:$('mac'), status:$('status'), pv:$('pv'),
+  every:$('every'), every_unit:$('every_unit'), attimewrap:$('attimewrap'), schedhint:$('schedhint'),
+  time:$('time'), mat:$('mat'), mac:$('mac'), status:$('status'), pv:$('pv'),
   save:$('save'), prev:$('prev'), now:$('now'), historylist:$('historylist'),
   cur:$('cur'), laststatus:$('laststatus'), nowtitle:$('nowtitle'), nowmeta:$('nowmeta'),
   nowdetails:$('nowdetails'), nowcaption:$('nowcaption'), nowlink:$('nowlink'),
-  nowstyle:$('nowstyle'), dropvoice:$('dropvoice'), stopwatch:$('stopwatch'),
+  nowstyle:$('nowstyle'), dropvoice:$('dropvoice'), stopwatch:$('stopwatch'), filewarn:$('filewarn'),
   pin:$('pin'), ban:$('ban'), fav:$('fav'), nowtop:$('nowtop'), back:$('back'), fwd:$('fwd')};
 function setSeg(val){document.querySelectorAll('#description button').forEach(b=>b.classList.toggle('on',b.dataset.v===val));
   el.tonerow.style.display = (val==='made-up') ? 'block' : 'none';}
@@ -544,8 +604,20 @@ function syncTypes(){el.typegrid.classList.toggle('hidden', el.all_types.checked
 el.all_types.onchange=syncTypes;
 // hydrate from config
 setSeg(cfg.description);
-el.content.value=cfg.content; el.all_types.checked=!!cfg.all_types; el.frequency.value=cfg.frequency;
+el.content.value=cfg.content; el.all_types.checked=!!cfg.all_types;
+// schedule: any interval (every N minutes/hours/days), with legacy `frequency` fallback
+const LEGACY={daily:[1,'days'],'twice-daily':[12,'hours'],'every-8h':[8,'hours'],'every-6h':[6,'hours']};
+let _ev=cfg.every, _eu=cfg.every_unit;
+if(!_ev){const m=LEGACY[cfg.frequency||'daily']||[1,'days']; _ev=m[0]; _eu=m[1];}
+el.every.value=_ev; el.every_unit.value=_eu||'days';
+function syncSched(){const n=Math.max(1,parseInt(el.every.value)||1), u=el.every_unit.value;
+  const daily=(n===1&&u==='days');
+  el.attimewrap.style.display=daily?'block':'none';
+  el.schedhint.textContent=daily?('Once a day at '+(el.time.value||'07:30')+'.')
+    :('Every '+n+' '+(n===1?u.slice(0,-1):u)+', around the clock.');}
+el.every.oninput=syncSched; el.every_unit.onchange=syncSched;
 el.time.value=cfg.time; el.mat.value=cfg.mat; el.mac.value=cfg.mac||''; el.qr.checked=cfg.qr!==false;
+el.time.oninput=syncSched; syncSched();
 el.source.value=cfg.source||'met'; el.ntfy_topic.value=cfg.ntfy_topic||'';
 el.hemisphere.value=cfg.hemisphere||'north'; el.subject.value=cfg.subject||'';
 el.watch_on_fail.checked=cfg.watch_on_fail!==false;
@@ -589,7 +661,7 @@ function collect(){return {description:document.querySelector('#description butt
   longitude:el.longitude.value.trim()===''?null:parseFloat(el.longitude.value),
   hemisphere:el.hemisphere.value, watch_on_fail:el.watch_on_fail.checked,
   ntfy_topic:el.ntfy_topic.value.trim(), password:el.password.value,
-  frequency:el.frequency.value, time:el.time.value, mat:el.mat.value,
+  every:Math.max(1,parseInt(el.every.value)||1), every_unit:el.every_unit.value, time:el.time.value, mat:el.mat.value,
   mac:el.mac.value.trim(), replace:true};}
 async function post(url,btn,label,working){el.status.textContent=label+'…';
   const old=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spin"></span>'+(working||'Working')+'…';
@@ -607,6 +679,7 @@ async function nav(url,btn){el.status.textContent='Switching…';btn.disabled=tr
 el.back.onclick=()=>nav('/back',el.back);
 el.fwd.onclick=()=>nav('/forward',el.fwd);
 async function loadState(){try{const j=await (await fetch('/state')).json(); const s=j.status||{};
+  el.filewarn.style.display = (j.files_ok===false) ? 'block' : 'none';
   const waiting = j.watching || s.waiting;
   el.laststatus.textContent = waiting ? ('⏳ Waiting for the TV to wake — will push as soon as it is on. '+(s.message||''))
     : (s.ok===false?'⚠ Last run failed: ':'Now showing · ')+(s.message||'');
@@ -646,5 +719,6 @@ if __name__ == "__main__":
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--host", default="0.0.0.0")
     a = ap.parse_args()
+    threading.Thread(target=_files_watchdog, daemon=True).start()   # alert if the folder gets evicted
     print(f"The Frame Machine control panel on http://{platform.node()}.local:{a.port}  (Ctrl-C to stop)")
     app.run(host=a.host, port=a.port)

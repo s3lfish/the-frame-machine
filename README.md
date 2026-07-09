@@ -60,6 +60,9 @@ to the genuine museum page.
 - **Self-healing when the TV's asleep.** If a scheduled change can't reach the Frame (deep
   standby is common), it hands off to a background watcher that keeps polling and pushes the
   moment the TV wakes — so you don't miss a day. (On by default; toggle in the panel's Advanced.)
+- **Notices if it can't read itself.** If a cloud-synced project folder (Dropbox/iCloud) evicts
+  the code to "online-only", the panel warns you and can ping your phone — otherwise scheduled
+  runs would fail silently.
 - **Subject mode.** Ask for "only show art of cats" (or dogs, dragons, anything).
 - **Spice modes, dialed to taste.** Each of these can be set to turn up **Never / Rarely /
   Sometimes / Always**, so they're an occasional surprise rather than every single day:
@@ -145,8 +148,8 @@ When the installer finishes it prints a link — open it on any phone or laptop 
 - **Spice modes** — season, holidays, live weather, *on this day*, and googly eyes — each set to
   **Never / Rarely / Sometimes / Always** so they turn up as often (or as rarely) as you like.
 - **Object types**, **mat colour**, and a **QR-code** toggle.
-- **How often & when** the art changes — the panel builds the schedule for you (launchd on
-  macOS, cron on Linux).
+- **How often** the art changes — **any interval** you like: every N minutes, hours, or once a
+  day at a set time. The panel builds the schedule for you (launchd on macOS, cron on Linux).
 - **♥ Favourite** a piece (it returns more often), **Stop this from changing**, or **Never show
   again** — plus a **history** of recent pieces.
 

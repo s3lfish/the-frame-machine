@@ -225,6 +225,7 @@ CONFIG = os.path.join(CFG, "config.json")   # written by the web GUI, read here 
 DEFAULTS = {"mac": "", "ip": None, "description": "made-up", "content": "museum",
             "all_types": True, "types": [], "placard": True, "qr": True, "mat": "charcoal",
             "fetch": 1, "replace": True, "frequency": "daily", "time": "07:30",
+            "every": 1, "every_unit": "days",
             "ntfy_topic": "", "tone": ["whimsical"], "source": "met", "orientation": "landscape",
             "pinned": False, "seasonal": False, "hemisphere": "north",
             "subject": "", "holidays": False, "weather": False, "on_this_day": False,
