@@ -230,7 +230,8 @@ DEFAULTS = {"mac": "", "ip": None, "description": "made-up", "content": "museum"
             "pinned": False, "seasonal": False, "hemisphere": "north",
             "subject": "", "holidays": False, "weather": False, "on_this_day": False,
             "seasonal_chance": 0.0, "holidays_chance": 0.0, "weather_chance": 0.0, "on_this_day_chance": 0.0,
-            "googly": False, "googly_chance": 0.0, "latitude": None, "longitude": None, "tone_weights": {},
+            "googly": False, "googly_chance": 0.0, "googly_strictness": 0.5,
+            "latitude": None, "longitude": None, "tone_weights": {},
             "watch_on_fail": True, "watch_interval": 60, "watch_timeout": 180}
 _TONE_WEIGHTS = None   # per-run override for made-up-voice weights (set from --tone-weights), else config's
 STATUS = os.path.join(CFG, "status.json")   # last-run outcome, for alerts + the dashboard
@@ -535,21 +536,27 @@ def _draw_googly(draw, box):
     px, py = cx + off*math.cos(ang), cy + off*math.sin(ang)
     draw.ellipse([px-pr, py-pr, px+pr, py+pr], fill=(12, 12, 12))
 
-def add_googly_eyes(img):
+def add_googly_eyes(img, strictness=0.5):
     """Stick cartoon googly eyes on every detected face. Uses opencv Haar cascades; returns
-    the image unchanged if opencv isn't installed or nothing face-like is found."""
+    the image unchanged if opencv isn't installed or nothing face-like is found.
+    `strictness` (0..1) sets how fussy detection is: 0 = eyes on anything vaguely face-ish
+    (false "faces" are half the fun), 1 = only clear, unmistakable faces."""
     if cv2 is None:
         print("  ! googly eyes need opencv — run: pip install opencv-python-headless", file=sys.stderr)
         return img
     try:
+        s = min(1.0, max(0.0, strictness))
         gray = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
         base = cv2.data.haarcascades
+        # Strictness scales every knob the cascade has: more corroborating neighbours,
+        # a bigger minimum face, and a harsher "speck vs biggest face" cut.
+        min_div = int(round(30 - 18*s))             # min face = 1/30th of the image (lax) .. 1/12th (strict)
         faces = list(cv2.CascadeClassifier(base + "haarcascade_frontalface_default.xml").detectMultiScale(
-            gray, scaleFactor=1.1, minNeighbors=5,     # trigger-happy on purpose — false "faces" are half the fun
-            minSize=(max(24, img.width//30), max(24, img.height//30))))
-        if len(faces) > 1:                          # only drop near-invisible specks (a smudge isn't funny; a face in a cloud is)
+            gray, scaleFactor=1.1, minNeighbors=3 + int(round(9*s)),
+            minSize=(max(24, img.width//min_div), max(24, img.height//min_div))))
+        if len(faces) > 1:
             biggest = max(fw*fh for (fx, fy, fw, fh) in faces)
-            faces = [f for f in faces if f[2]*f[3] >= 0.06*biggest]
+            faces = [f for f in faces if f[2]*f[3] >= (0.06 + 0.44*s)*biggest]
         eye_cc = cv2.CascadeClassifier(base + "haarcascade_eye.xml")
         draw, n = ImageDraw.Draw(img), 0
         for (fx, fy, fw, fh) in faces:
@@ -558,6 +565,8 @@ def add_googly_eyes(img):
             eyes = sorted(eyes, key=lambda e: e[2]*e[3], reverse=True)[:2]
             if eyes:
                 boxes = [(fx+ex, fy+ey, ew, eh) for (ex, ey, ew, eh) in eyes]
+            elif s >= 0.75:                         # strict: a "face" with no findable eyes is probably a smudge
+                continue
             else:                                   # no eyes detected — fake a pair in the upper face
                 ew = fw // 5; ey = fy + int(fh*0.32)
                 boxes = [(fx + int(fw*0.24) - ew//2, ey, ew, ew),
@@ -565,7 +574,7 @@ def add_googly_eyes(img):
             for b in boxes:
                 _draw_googly(draw, b)
             n += 1
-        print(f"  googly eyes: {n} face(s)")
+        print(f"  googly eyes: {n} face(s) (strictness {s:.2f})")
         return img
     except Exception as e:
         print(f"  ! googly eyes: {str(e)[:100]}", file=sys.stderr)
@@ -790,12 +799,13 @@ def mat_with_placard(art, meta, mat_rgb, desc=None, link=None):
             print(f"  ! qr: {str(e)[:80]}", file=sys.stderr)
     return canvas
 
-def _render_piece(art, meta, mat_rgb, path, placard, describe, qr, tone, page_url, real_text=None, scrape=False, googly_chance=0.0):
+def _render_piece(art, meta, mat_rgb, path, placard, describe, qr, tone, page_url, real_text=None, scrape=False, googly_chance=0.0, googly_strict=0.5):
     """Render one artwork to `path`: plain art, or a placard with an optional caption + QR.
     'real' captions come from `real_text` (Cleveland) or by scraping the Met page (scrape=True).
-    Googly eyes are applied at random with probability `googly_chance` (0..1)."""
+    Googly eyes are applied at random with probability `googly_chance` (0..1); `googly_strict`
+    sets how fussy the face detection is."""
     if googly_chance and random.random() < googly_chance:
-        art = add_googly_eyes(art)
+        art = add_googly_eyes(art, googly_strict)
     desc, caption_style = None, None
     if placard and describe == "real":
         desc = _truncate_prose(real_text) if real_text else (met_prose(page_url) if scrape else None)
@@ -841,7 +851,7 @@ def all_object_ids():
         pass
     return ids
 
-def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", subject="", holidays=False, weather=False, on_this_day=False, latitude=None, longitude=None, googly_chance=0.0):
+def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", subject="", holidays=False, weather=False, on_this_day=False, latitude=None, longitude=None, googly_chance=0.0, googly_strict=0.5):
     os.makedirs(TMP, exist_ok=True)
     LAST_PIECES.clear()
     avoid = avoid or set()
@@ -917,7 +927,7 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
                     "culture": culture, "objectName": o.get("objectName"), "culture_period": cp,
                     "credit": o.get("creditLine"), "museum": "The Metropolitan Museum of Art"}
             p = os.path.join(TMP, f"{len(paths)+1:02d}_{slug(o.get('title','art'))}.jpg")
-            caption_style, caption = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("objectURL"), scrape=True, googly_chance=googly_chance)
+            caption_style, caption = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("objectURL"), scrape=True, googly_chance=googly_chance, googly_strict=googly_strict)
             paths.append(p)
             LAST_PIECES.append({"title": o.get("title") or "", "source": o.get("_source_name", "The Met"),
                                 "artist": o.get("artistDisplayName") or o.get("culture") or "Unknown",
@@ -934,7 +944,7 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
 CLE_API = "https://openaccess-api.clevelandart.org/api/artworks/"
 CLE_NAME = "Cleveland Museum of Art"
 
-def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", all_types=True, subject="", holidays=False, weather=False, on_this_day=False, latitude=None, longitude=None, googly_chance=0.0):
+def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", all_types=True, subject="", holidays=False, weather=False, on_this_day=False, latitude=None, longitude=None, googly_chance=0.0, googly_strict=0.5):
     """Second source: Cleveland Museum of Art open access (keyless, CC0). Its API carries
     a real 'description', so 'real' captions need no scraping."""
     os.makedirs(TMP, exist_ok=True); LAST_PIECES.clear()
@@ -990,7 +1000,7 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
                 continue
             art = Image.open(io.BytesIO(r.content)).convert("RGB")
             p = os.path.join(TMP, f"{len(paths)+1:02d}_{slug(meta['title'])}.jpg")
-            caption_style, caption = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("url"), real_text=o.get("description"), googly_chance=googly_chance)
+            caption_style, caption = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("url"), real_text=o.get("description"), googly_chance=googly_chance, googly_strict=googly_strict)
             paths.append(p)
             LAST_PIECES.append({"title": meta["title"], "artist": name or meta["culture"] or "Unknown",
                                 "url": o.get("url") or "", "source": CLE_NAME, "id": f"cle:{o.get('id')}",
@@ -1003,14 +1013,14 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
             print(f"  ! skip {o.get('id')}: {str(e)[:120]}", file=sys.stderr)
     return paths
 
-def prep_local(files, mat_rgb, googly_chance=0.0):
+def prep_local(files, mat_rgb, googly_chance=0.0, googly_strict=0.5):
     os.makedirs(TMP, exist_ok=True)
     out = []
     for f in files:
         im = Image.open(f).convert("RGB")
         googlied = bool(googly_chance) and random.random() < googly_chance
         if googlied:
-            im = add_googly_eyes(im)
+            im = add_googly_eyes(im, googly_strict)
         if googlied or im.size != CANVAS:
             p = os.path.join(TMP, f"local_{slug(os.path.basename(f))}.jpg")
             mat_image(im, mat_rgb).save(p, "JPEG", quality=JPEG_Q); out.append(p)
@@ -1052,11 +1062,13 @@ def _fetch_source(args, mat_rgb, count):
         return fetch_cleveland(count, args.query, mat_rgb, args.theme, args.placard,
                                args.describe, args.types, args.qr, args.tone, avoid,
                                seasonal, args.hemisphere, args.all_types, args.subject, holidays,
-                               weather, on_this_day, args.latitude, args.longitude, args.googly_chance)
+                               weather, on_this_day, args.latitude, args.longitude, args.googly_chance,
+                               args.googly_strict)
     return fetch_matted(count, args.query, mat_rgb, args.theme, args.placard, args.all_types,
                         args.describe, args.types, args.qr, args.tone, avoid, seasonal,
                         args.hemisphere, args.subject, holidays,
-                        weather, on_this_day, args.latitude, args.longitude, args.googly_chance)
+                        weather, on_this_day, args.latitude, args.longitude, args.googly_chance,
+                        args.googly_strict)
 
 FAV_CHANCE = 0.2   # chance a scheduled run re-shows a favourite instead of fresh art
 
@@ -1065,7 +1077,7 @@ def _gather(args, mat_rgb, count):
     and used as a graceful fallback if fresh art can't be fetched. Preview and an explicit
     'change now' (--force) always fetch fresh; only automatic runs re-show favourites."""
     if args.files:
-        return prep_local(args.files, mat_rgb, args.googly_chance)
+        return prep_local(args.files, mat_rgb, args.googly_chance, args.googly_strict)
     if not args.preview and not args.force and random.random() < FAV_CHANCE:
         fav = favourite_pick()
         if fav:
@@ -1277,6 +1289,10 @@ def main():
     ap.add_argument("--googly-chance", dest="googly_chance", type=float,
                     default=cfg.get("googly_chance", 1.0 if cfg.get("googly") else 0.0),
                     help="probability 0..1 that a piece gets cartoon googly eyes on its faces")
+    ap.add_argument("--googly-strictness", dest="googly_strict", type=float,
+                    default=cfg.get("googly_strictness", 0.5),
+                    help="how fussy face detection is, 0..1 (0 = eyes on anything vaguely "
+                         "face-ish, 1 = only clear faces with findable eyes)")
     ap.add_argument("--preview", default=None, metavar="PATH",
                     help="render one image to PATH and exit — does not touch the TV")
     ap.add_argument("--force", action="store_true", help="change the art even if pinned")
@@ -1308,6 +1324,7 @@ def main():
         if b is not None:
             setattr(args, name + "_chance", 1.0 if b else 0.0)
         setattr(args, name + "_chance", min(1.0, max(0.0, getattr(args, name + "_chance") or 0.0)))
+    args.googly_strict = min(1.0, max(0.0, args.googly_strict if args.googly_strict is not None else 0.5))
     try:
         run(args)
     except Exception as e:

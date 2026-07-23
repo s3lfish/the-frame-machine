@@ -128,6 +128,7 @@ def flags_from(cfg):
         if ch is None:
             ch = 1.0 if cfg.get(key) else 0.0
         f += [cli, str(ch)]
+    f += ["--googly-strictness", str(cfg.get("googly_strictness", 0.5))]
     f += ["--watch-on-fail"] if cfg.get("watch_on_fail", True) else ["--no-watch-on-fail"]
     f += ["--hemisphere", cfg.get("hemisphere", "north")]
     if cfg.get("latitude") is not None and cfg.get("longitude") is not None:
@@ -519,6 +520,12 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    <span class="vname">Googly eyes <span class="sub">— cartoon eyes on any faces, just for fun</span></span>
    <div class="lvl"><button data-w="0">Never</button><button data-w="0.2">Rarely</button><button data-w="0.5">Sometimes</button><button data-w="1">Always</button></div>
  </div>
+ <div id="googlystrictrow" style="display:none;margin:6px 0 10px 12px">
+   <label class="f" style="font-weight:400">Face detection fussiness <span class="sub">— slide right if eyes keep landing on things that aren't faces</span></label>
+   <input type="range" id="googly_strict" min="0" max="100" step="5" style="width:100%;accent-color:var(--accent);margin-top:6px">
+   <div class="sub" style="display:flex;justify-content:space-between;margin-top:2px">
+     <span>Anything face-ish</span><span id="strictword" style="color:var(--ink)"></span><span>Only clear faces</span></div>
+ </div>
  <label class="chk" style="margin-top:14px"><input type="checkbox" id="all_types">
    <span>All object types <span class="sub">— everything the museum has</span></span></label>
  <div id="typegrid" class="typegrid">
@@ -586,6 +593,7 @@ const el = {content:$('content'), source:$('source'), all_types:$('all_types'), 
   placard:$('placard'), captionopts:$('captionopts'), qr:$('qr'), tonerow:$('tonerow'),
   seasonal:$('seasonal'), holidays:$('holidays'), subject:$('subject'), hemisphere:$('hemisphere'),
   weather:$('weather'), on_this_day:$('on_this_day'), googly:$('googly'),
+  googly_strict:$('googly_strict'), googlystrictrow:$('googlystrictrow'), strictword:$('strictword'),
   latitude:$('latitude'), longitude:$('longitude'),
   ntfy_topic:$('ntfy_topic'), password:$('password'), watch_on_fail:$('watch_on_fail'),
   every:$('every'), every_unit:$('every_unit'), attimewrap:$('attimewrap'), schedhint:$('schedhint'),
@@ -641,8 +649,15 @@ const CH=[0,0.2,0.5,1];
  ['googly',cfg.googly_chance,cfg.googly]].forEach(([id,ch,legacy])=>{
   const c = ch!=null?ch:(legacy?1:0); const row=$(id);
   setVoice(row,CH.reduce((a,b)=>Math.abs(b-c)<Math.abs(a-c)?b:a));
-  row.querySelectorAll('.lvl button').forEach(b=>b.onclick=()=>setVoice(row,parseFloat(b.dataset.w)));
+  row.querySelectorAll('.lvl button').forEach(b=>b.onclick=()=>{setVoice(row,parseFloat(b.dataset.w));syncGoogly();});
 });
+// googly face-detection fussiness slider — only shown while googly eyes are in play
+el.googly_strict.value=Math.round(100*(cfg.googly_strictness!=null?cfg.googly_strictness:0.5));
+function syncGoogly(){
+  el.googlystrictrow.style.display=parseFloat(el.googly.dataset.w||'0')>0?'block':'none';
+  const v=parseInt(el.googly_strict.value);
+  el.strictword.textContent=v<25?'anything goes':v<50?'relaxed':v<75?'balanced':'strict';}
+el.googly_strict.oninput=syncGoogly; syncGoogly();
 syncPlacard();
 const chosen=new Set(cfg.types||[]);
 document.querySelectorAll('.tcheck').forEach(c=>c.checked=chosen.has(c.dataset.type));
@@ -657,6 +672,7 @@ function collect(){return {description:document.querySelector('#description butt
   seasonal_chance:parseFloat(el.seasonal.dataset.w||'0'), holidays_chance:parseFloat(el.holidays.dataset.w||'0'),
   weather_chance:parseFloat(el.weather.dataset.w||'0'), on_this_day_chance:parseFloat(el.on_this_day.dataset.w||'0'),
   googly_chance:parseFloat(el.googly.dataset.w||'0'),
+  googly_strictness:parseInt(el.googly_strict.value)/100,
   latitude:el.latitude.value.trim()===''?null:parseFloat(el.latitude.value),
   longitude:el.longitude.value.trim()===''?null:parseFloat(el.longitude.value),
   hemisphere:el.hemisphere.value, watch_on_fail:el.watch_on_fail.checked,

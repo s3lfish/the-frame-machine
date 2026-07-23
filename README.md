@@ -72,7 +72,9 @@ to the genuine museum page.
     (keyless; auto-locates by IP, or set coordinates).
   - **On this day** — art tied to a real historical event from today's date (Wikipedia's *On this day*).
   - **Googly eyes** — detect any faces in the art and slap cartoon googly eyes on them, just for
-    fun. (Optional — needs `opencv-python-headless`, installed by default.)
+    fun. A **fussiness slider** controls how strict the face detection is, from "eyes on anything
+    vaguely face-ish" to "only clear faces". (Optional — needs `opencv-python-headless`,
+    installed by default.)
 - **Mission-control dashboard.** See what's on the TV now — full details (date, medium,
   dimensions, credit) and the caption text — when it last changed, and whether the last run
   worked; plus **Pin** (hold a piece), **Ban** (never show it again) and no-repeats.
@@ -175,6 +177,7 @@ python3 frame_push.py --source cleveland --subject cats     # Cleveland, cats on
 python3 frame_push.py --weather                             # match the live local weather
 python3 frame_push.py --on-this-day                        # art tied to a historical event today
 python3 frame_push.py --files a.jpg b.jpg --googly          # push your own images, with googly eyes
+python3 frame_push.py --googly --googly-strictness 0.8      # googly eyes, but only on clear faces
 ```
 
 Run `python3 frame_push.py --help` for every flag.
