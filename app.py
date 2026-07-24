@@ -571,7 +571,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  <input type="text" id="ntfy_topic" placeholder="e.g. my-frame-alerts-8b3" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px">
  <p class="sub" style="margin-top:8px">Pick any hard-to-guess word, then subscribe to it in the free <b>ntfy</b> app to get a push if a run ever fails. Leave blank for none.</p>
  <label class="chk" style="margin-top:16px"><input type="checkbox" id="watch_on_fail">
-   <span>Keep trying if the TV is asleep <span class="sub">— if a change can't reach the TV, keep watching in the background and push as soon as it wakes</span></span></label>
+   <span>Keep trying if the TV is asleep or in use <span class="sub">— if a change can't happen right now (TV asleep, or someone's watching it), keep watching in the background and push once it's free</span></span></label>
  <label class="f" style="margin-top:16px">Hemisphere <span class="sub">— for “Match the season”</span></label>
  <select id="hemisphere"><option value="north">Northern</option><option value="south">Southern</option></select>
  <label class="f" style="margin-top:16px">Location <span class="sub">— for “Match today's weather”</span></label>
@@ -697,7 +697,7 @@ el.fwd.onclick=()=>nav('/forward',el.fwd);
 async function loadState(){try{const j=await (await fetch('/state')).json(); const s=j.status||{};
   el.filewarn.style.display = (j.files_ok===false) ? 'block' : 'none';
   const waiting = j.watching || s.waiting;
-  el.laststatus.textContent = waiting ? ('⏳ Waiting for the TV to wake — will push as soon as it is on. '+(s.message||''))
+  el.laststatus.textContent = waiting ? ('⏳ Waiting for the TV to be free (awake, not being watched) — will change the art automatically. '+(s.message||''))
     : (s.ok===false?'⚠ Last run failed: ':'Now showing · ')+(s.message||'');
   el.laststatus.style.color = waiting ? 'var(--accent)' : (s.ok===false ? '#e0704a' : 'var(--sub)');
   el.stopwatch.style.display = waiting ? 'inline-block' : 'none';

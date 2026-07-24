@@ -408,7 +408,7 @@ WATCH_PID = os.path.join(CFG, "watcher.pid")
 WATCH_LOG = os.path.join(CFG, "watcher.log")
 
 class _Unreachable(RuntimeError):
-    """The Frame's art channel couldn't be reached (asleep / off the LAN)."""
+    """The push can't happen right now — TV asleep, off the LAN, or being watched."""
 
 def _port_open(ip, port=8002, timeout=3):
     """True if a TCP connection to ip:port succeeds — i.e. the art API is actually up
@@ -431,6 +431,14 @@ def tv_ready(preferred, mac, deep=False):
         if ip and _port_open(ip):
             return ip
     return None
+
+def tv_in_use(art):
+    """True if the TV is switched on with art mode OFF — i.e. someone is actually
+    watching it. In art mode, asleep, or unreachable all return False."""
+    try:
+        return str(art.get_artmode()).strip().lower() == "off"
+    except Exception:
+        return False                                     # can't tell — don't block the push
 
 def _watcher_running():
     """True if a watcher process from a previous run is still alive (avoid duplicates)."""
@@ -467,7 +475,7 @@ def _maybe_watch(args, reason):
         write_status(False, reason + " A watcher is already waiting to retry.", {"waiting": True})
         return
     if _spawn_watcher(getattr(args, "_argv", [])):
-        msg = reason + " Watching for the TV to wake — will retry automatically."
+        msg = reason + " Watching in the background — the art will change once the TV is free."
         print("  " + msg); write_status(False, msg, {"waiting": True}); ntfy_alert("Frame art waiting", msg)
     else:
         raise RuntimeError(reason)
@@ -489,18 +497,18 @@ def _watch_loop(args):
         os.makedirs(CFG, exist_ok=True); open(WATCH_PID, "w").write(str(os.getpid()))
     except Exception:
         pass
-    write_status(False, "Waiting for the TV to wake, then it'll change the art.", {"waiting": True})
+    write_status(False, "Waiting for the TV to be free (awake, not being watched), then it'll change the art.", {"waiting": True})
     i = 0
     try:
         while time.time() < deadline:
             ip = tv_ready(args.ip, args.mac, deep=(i % 5 == 0))
             if ip:
                 args.ip = ip
-                print("TV art channel is up — pushing now.")
+                print("TV art channel is up — trying the push.")
                 try:
                     return run(args)
-                except _Unreachable:
-                    pass                                 # slipped back to sleep; keep waiting
+                except _Unreachable as e:
+                    print(f"  deferred: {e}")            # asleep again, or being watched; keep waiting
             i += 1
             time.sleep(interval)
         gave = "Gave up — the TV didn't wake within the watch window."
@@ -1132,6 +1140,12 @@ def run(args):
         except RuntimeError as e:
             return _maybe_watch(args, str(e))
         print("Art channel is up.")
+
+    # Never yank the TV away from someone actually watching it: automatic runs
+    # (the daily job, watcher retries) defer until it's back in art mode or asleep.
+    # --force (the panel's Change-now / back / forward buttons) still goes through.
+    if not args.force and tv_in_use(art):
+        return _maybe_watch(args, "The TV is being watched right now — leaving it alone.")
 
     print("Preparing images...")
     paths = _gather(args, mat_rgb, args.fetch)
