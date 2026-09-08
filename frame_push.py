@@ -1137,25 +1137,54 @@ def _roll(chance):
     """True with probability `chance` (0..1) — how a per-run bias mode fires."""
     return random.random() < (chance or 0.0)
 
-def _fetch_source(args, mat_rgb, count):
+def _fetch_source(args, mat_rgb, count, relax=0, src=None):
+    """One fetch attempt. relax=0 is exactly as configured; relax>=1 switches the
+    season/holiday/weather/on-this-day biases off (a bias term like an obscure
+    'on this day' event can easily match nothing at a museum). `src` forces a museum."""
     avoid = {str(x) for x in _load_list(BLOCKLIST)} | {str(h.get("id")) for h in _load_list(HISTORY)[-40:]}
-    src = random.choice(["met", "cleveland"]) if args.source == "any" else args.source
+    src = src or (random.choice(["met", "cleveland"]) if args.source == "any" else args.source)
     # Each bias mode is rolled once per run against its configured chance.
-    seasonal    = _roll(args.seasonal_chance)
-    holidays    = _roll(args.holidays_chance)
-    weather     = _roll(args.weather_chance)
-    on_this_day = _roll(args.on_this_day_chance)
+    seasonal    = not relax and _roll(args.seasonal_chance)
+    holidays    = not relax and _roll(args.holidays_chance)
+    weather     = not relax and _roll(args.weather_chance)
+    on_this_day = not relax and _roll(args.on_this_day_chance)
     if src == "cleveland":
-        return fetch_cleveland(count, args.query, mat_rgb, args.theme, args.placard,
-                               args.describe, args.types, args.qr, args.tone, avoid,
-                               seasonal, args.hemisphere, args.all_types, args.subject, holidays,
-                               weather, on_this_day, args.latitude, args.longitude, args.googly_chance,
-                               args.googly_strict, args.fill, args.fill_tolerance)
-    return fetch_matted(count, args.query, mat_rgb, args.theme, args.placard, args.all_types,
-                        args.describe, args.types, args.qr, args.tone, avoid, seasonal,
-                        args.hemisphere, args.subject, holidays,
-                        weather, on_this_day, args.latitude, args.longitude, args.googly_chance,
-                        args.googly_strict, args.fill, args.fill_tolerance)
+        paths = fetch_cleveland(count, args.query, mat_rgb, args.theme, args.placard,
+                                args.describe, args.types, args.qr, args.tone, avoid,
+                                seasonal, args.hemisphere, args.all_types, args.subject, holidays,
+                                weather, on_this_day, args.latitude, args.longitude, args.googly_chance,
+                                args.googly_strict, args.fill, args.fill_tolerance)
+    else:
+        paths = fetch_matted(count, args.query, mat_rgb, args.theme, args.placard, args.all_types,
+                             args.describe, args.types, args.qr, args.tone, avoid, seasonal,
+                             args.hemisphere, args.subject, holidays,
+                             weather, on_this_day, args.latitude, args.longitude, args.googly_chance,
+                             args.googly_strict, args.fill, args.fill_tolerance)
+    return paths, src
+
+def _fetch_with_retries(args, mat_rgb, count):
+    """Keep trying until something comes back: the configured search first, then the same
+    search without the date/weather biases (fresh random terms each time), then the other
+    museum, then the whole collection with the subject/genre dropped. Object-type and
+    screen-fit settings are kept throughout — they're about what looks right, not what's on."""
+    paths, src = _fetch_source(args, mat_rgb, count)
+    if paths:
+        return paths
+    other = "met" if src == "cleveland" else "cleveland"
+    steps = [("same search again, without season/holiday/weather/on-this-day terms", args, src),
+             (f"the other museum ({'the Met' if other == 'met' else 'Cleveland'})", args, other)]
+    if args.query or args.subject or args.theme != "museum":
+        loose = argparse.Namespace(**vars(args)); loose.query = None; loose.subject = ""; loose.theme = "museum"
+        steps.append(("anything from the whole collection", loose, None))
+    for why, a, forced in steps:
+        print(f"  ↻ nothing found — trying {why}")
+        try:
+            paths, _ = _fetch_source(a, mat_rgb, count, relax=1, src=forced)
+        except Exception as e:
+            print(f"  ! retry failed: {str(e)[:120]}", file=sys.stderr); paths = []
+        if paths:
+            return paths
+    return []
 
 FAV_CHANCE = 0.2   # chance a scheduled run re-shows a favourite instead of fresh art
 
@@ -1169,7 +1198,7 @@ def _gather(args, mat_rgb, count):
         fav = favourite_pick()
         if fav:
             print("  ★ reshowing a favourite"); return [fav]
-    paths = _fetch_source(args, mat_rgb, count)
+    paths = _fetch_with_retries(args, mat_rgb, count)
     if not paths and not args.preview:         # couldn't get new art -> fall back to a favourite
         fav = favourite_pick()
         if fav:

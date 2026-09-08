@@ -6,6 +6,10 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ## [Unreleased]
 
 ### Fixed
+- **A search that finds nothing no longer ends in a blank.** If the configured search
+  comes up empty (e.g. an obscure "on this day" term the museum has no art for), the run
+  retries: the same search without the date/weather terms, then the other museum, then
+  anything from the whole collection — before the favourites fallback. (2026-09-08)
 - **Automatic art changes no longer take over the TV while someone is watching it.**
   The daily job (and its background retry watcher) now checks whether Art Mode is
   active first; if the TV is on showing live TV or apps, the change waits until the
