@@ -118,6 +118,8 @@ def flags_from(cfg):
         if cfg.get("types"):
             f += ["--types", ",".join(cfg["types"])]
     f += ["--placard"] if cfg.get("placard", True) else ["--no-placard"]
+    f += ["--fill"] if cfg.get("fill") else ["--no-fill"]
+    f += ["--fill-tolerance", str(cfg.get("fill_tolerance", 0.2))]
     f += ["--qr"] if cfg.get("qr", True) else ["--no-qr"]
     f += ["--replace"] if cfg.get("replace", True) else ["--no-replace"]
     # per-run "chance" modes — fall back to the legacy on/off bool if no chance is stored yet
@@ -460,7 +462,15 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 </div>
 
 <div class="card">
- <label class="chk"><input type="checkbox" id="placard">
+ <label class="f">Screen fit <span class="sub">— how the art sits on the screen</span></label>
+ <select id="fill">
+   <option value="off">Any shape — matted to fit</option>
+   <option value="0.1">Fill the screen — only near-perfect fits (trim up to 10%)</option>
+   <option value="0.2">Fill the screen — close enough (trim up to 20%)</option>
+   <option value="0.3">Fill the screen — be generous (trim up to 30%)</option>
+ </select>
+ <p class="sub" id="fillhint" style="margin-top:8px"></p>
+ <label class="chk" style="margin-top:14px"><input type="checkbox" id="placard">
    <span>Museum label <span class="sub">— artist, title &amp; details beside the art (off = just the artwork, no captions)</span></span></label>
  <div id="captionopts">
    <label class="f" style="margin-top:16px">Caption <span class="sub">— the story under each piece</span></label>
@@ -597,7 +607,7 @@ const el = {content:$('content'), source:$('source'), all_types:$('all_types'), 
   latitude:$('latitude'), longitude:$('longitude'),
   ntfy_topic:$('ntfy_topic'), password:$('password'), watch_on_fail:$('watch_on_fail'),
   every:$('every'), every_unit:$('every_unit'), attimewrap:$('attimewrap'), schedhint:$('schedhint'),
-  time:$('time'), mat:$('mat'), mac:$('mac'), status:$('status'), pv:$('pv'),
+  time:$('time'), mat:$('mat'), fill:$('fill'), fillhint:$('fillhint'), mac:$('mac'), status:$('status'), pv:$('pv'),
   save:$('save'), prev:$('prev'), now:$('now'), historylist:$('historylist'),
   cur:$('cur'), laststatus:$('laststatus'), nowtitle:$('nowtitle'), nowmeta:$('nowmeta'),
   nowdetails:$('nowdetails'), nowcaption:$('nowcaption'), nowlink:$('nowlink'),
@@ -658,6 +668,14 @@ function syncGoogly(){
   const v=parseInt(el.googly_strict.value);
   el.strictword.textContent=v<25?'anything goes':v<50?'relaxed':v<75?'balanced':'strict';}
 el.googly_strict.oninput=syncGoogly; syncGoogly();
+// screen fit: off, or a max-trim tolerance
+(()=>{const tol=cfg.fill_tolerance!=null?cfg.fill_tolerance:0.2;
+  el.fill.value=cfg.fill?['0.1','0.2','0.3'].reduce((a,b)=>Math.abs(b-tol)<Math.abs(a-tol)?b:a):'off';})();
+function syncFill(){const on=el.fill.value!=='off';
+  el.fillhint.textContent=on
+    ?'Skips anything that would need more trimming than that, so only wide, screen-shaped pieces get picked; edges are trimmed evenly. With the museum label on, the art fills the space beside the label instead. The mat colour only shows around the label.'
+    :'Every piece is shown whole, centred on a mat.';}
+el.fill.onchange=syncFill; syncFill();
 syncPlacard();
 const chosen=new Set(cfg.types||[]);
 document.querySelectorAll('.tcheck').forEach(c=>c.checked=chosen.has(c.dataset.type));
@@ -678,6 +696,7 @@ function collect(){return {description:document.querySelector('#description butt
   hemisphere:el.hemisphere.value, watch_on_fail:el.watch_on_fail.checked,
   ntfy_topic:el.ntfy_topic.value.trim(), password:el.password.value,
   every:Math.max(1,parseInt(el.every.value)||1), every_unit:el.every_unit.value, time:el.time.value, mat:el.mat.value,
+  fill:el.fill.value!=='off', fill_tolerance:el.fill.value==='off'?(cfg.fill_tolerance!=null?cfg.fill_tolerance:0.2):parseFloat(el.fill.value),
   mac:el.mac.value.trim(), replace:true};}
 async function post(url,btn,label,working){el.status.textContent=label+'…';
   const old=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spin"></span>'+(working||'Working')+'…';

@@ -149,6 +149,9 @@ When the installer finishes it prints a link — open it on any phone or laptop 
   cats"*. Pick the museum (the Met, Cleveland, or either).
 - **Spice modes** — season, holidays, live weather, *on this day*, and googly eyes — each set to
   **Never / Rarely / Sometimes / Always** so they turn up as often (or as rarely) as you like.
+- **Screen fit:** show every piece whole on a mat, or **fill the screen** — only wide,
+  screen-shaped pieces get picked (you choose how much trimming is acceptable: 10/20/30%),
+  and they're shown edge to edge with no mat.
 - **Object types**, **mat colour**, and a **QR-code** toggle.
 - **How often** the art changes — **any interval** you like: every N minutes, hours, or once a
   day at a set time. The panel builds the schedule for you (launchd on macOS, cron on Linux).
@@ -178,6 +181,7 @@ python3 frame_push.py --weather                             # match the live loc
 python3 frame_push.py --on-this-day                        # art tied to a historical event today
 python3 frame_push.py --files a.jpg b.jpg --googly          # push your own images, with googly eyes
 python3 frame_push.py --googly --googly-strictness 0.8      # googly eyes, but only on clear faces
+python3 frame_push.py --fill --fill-tolerance 0.2           # only screen-shaped art, shown edge to edge
 ```
 
 Run `python3 frame_push.py --help` for every flag.

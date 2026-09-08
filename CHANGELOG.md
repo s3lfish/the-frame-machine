@@ -13,6 +13,10 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   Back/Forward) still act immediately. (2026-07-24)
 
 ### Added
+- **Screen fit** setting: fill the screen with only wide, screen-shaped art (shown edge
+  to edge, no mat) at a chosen trim tolerance of 10/20/30%, or keep matting any shape.
+  Candidates are screened by the museums' dimension data before download and by the
+  actual image after. `--fill` / `--fill-tolerance` on the CLI. (2026-09-08)
 - Weather-reactive art, "on this day" art, and googly eyes on faces (opencv
   face detection), all with their own controls in the panel. (2026-07-02)
 - Browse **back and forward** through recently shown art from the panel — a ring of

@@ -232,7 +232,8 @@ DEFAULTS = {"mac": "", "ip": None, "description": "made-up", "content": "museum"
             "seasonal_chance": 0.0, "holidays_chance": 0.0, "weather_chance": 0.0, "on_this_day_chance": 0.0,
             "googly": False, "googly_chance": 0.0, "googly_strictness": 0.5,
             "latitude": None, "longitude": None, "tone_weights": {},
-            "watch_on_fail": True, "watch_interval": 60, "watch_timeout": 180}
+            "watch_on_fail": True, "watch_interval": 60, "watch_timeout": 180,
+            "fill": False, "fill_tolerance": 0.2}
 _TONE_WEIGHTS = None   # per-run override for made-up-voice weights (set from --tone-weights), else config's
 STATUS = os.path.join(CFG, "status.json")   # last-run outcome, for alerts + the dashboard
 HISTORY = os.path.join(CFG, "history.json") # recently displayed pieces (for no-repeats + dashboard)
@@ -524,7 +525,40 @@ def slug(s, n=50):
     s = re.sub(r"[^\w\s-]", "", s).strip().lower()
     return re.sub(r"[\s_-]+", "-", s)[:n] or "art"
 
-def mat_image(art, mat_rgb):
+# Placard geometry: outer margin, label column width, gap between art and label.
+PLACARD_M, PLACARD_TEXT_W, PLACARD_GAP = 165, 1040, 130
+
+def fill_target(placard):
+    """The (w, h) the artwork has to fill in 'fill the screen' mode: the whole
+    canvas, or the art region left of the label when the placard is on."""
+    cw, ch = CANVAS
+    if placard:
+        return cw - 2*PLACARD_M - PLACARD_TEXT_W - PLACARD_GAP, ch - 2*PLACARD_M
+    return cw, ch
+
+def crop_loss(aw, ah, tw, th):
+    """Fraction of an aw x ah image that is trimmed away when it is centre-cropped
+    to the tw x th shape (0 = exact fit, 0.5 = half the picture gone)."""
+    if not aw or not ah:
+        return 1.0
+    r, t = aw/ah, tw/th
+    return 1 - t/r if r > t else 1 - r/t
+
+def cover_crop(art, tw, th):
+    """Centre-crop `art` to the tw:th shape and scale it to exactly tw x th."""
+    aw, ah = art.size
+    r, t = aw/ah, tw/th
+    if r > t:                                   # too wide -> trim the sides
+        nw = max(1, int(round(ah*t))); x0 = (aw-nw)//2
+        art = art.crop((x0, 0, x0+nw, ah))
+    elif r < t:                                 # too tall -> trim top and bottom
+        nh = max(1, int(round(aw/t))); y0 = (ah-nh)//2
+        art = art.crop((0, y0, aw, y0+nh))
+    return art.resize((tw, th), Image.LANCZOS)
+
+def mat_image(art, mat_rgb, fill=False):
+    if fill:                                    # edge to edge, no mat
+        return cover_crop(art, *CANVAS)
     cw, ch = CANVAS
     aw, ah = art.size
     scale = min(int(cw*MARGIN)/aw, int(ch*MARGIN)/ah)
@@ -740,20 +774,25 @@ def ai_blurb(meta, tone="whimsical"):
         print(f"  ! ai_blurb: {str(e)[:80]}", file=sys.stderr)
         return None, None
 
-def mat_with_placard(art, meta, mat_rgb, desc=None, link=None):
+def mat_with_placard(art, meta, mat_rgb, desc=None, link=None, fill=False):
     """Fit the artwork on the left and render a gallery-label panel on the right,
-    so photographed sculpture/objects (and paintings) all look intentional."""
+    so photographed sculpture/objects (and paintings) all look intentional.
+    With fill=True the art is cropped to fill the whole left region instead."""
     cw, ch = CANVAS
-    M, TEXT_W, GAP = 165, 1040, 130
+    M, TEXT_W, GAP = PLACARD_M, PLACARD_TEXT_W, PLACARD_GAP
     canvas = Image.new("RGB", CANVAS, mat_rgb)
     draw = ImageDraw.Draw(canvas)
 
     # --- artwork, fitted into the left region, with a thin keyline ---
-    region_w, region_h = cw - 2*M - TEXT_W - GAP, ch - 2*M
+    region_w, region_h = fill_target(True)
     aw, ah = art.size
-    scale = min(region_w/aw, region_h/ah)
-    nw, nh = max(1, int(aw*scale)), max(1, int(ah*scale))
-    art_r = art.resize((nw, nh), Image.LANCZOS)
+    if fill:
+        nw, nh = region_w, region_h
+        art_r = cover_crop(art, nw, nh)
+    else:
+        scale = min(region_w/aw, region_h/ah)
+        nw, nh = max(1, int(aw*scale)), max(1, int(ah*scale))
+        art_r = art.resize((nw, nh), Image.LANCZOS)
     ax, ay = M + (region_w - nw)//2, M + (region_h - nh)//2
     canvas.paste(art_r, (ax, ay))
     draw.rectangle([ax-1, ay-1, ax+nw, ay+nh], outline=(92, 92, 94), width=2)
@@ -807,7 +846,7 @@ def mat_with_placard(art, meta, mat_rgb, desc=None, link=None):
             print(f"  ! qr: {str(e)[:80]}", file=sys.stderr)
     return canvas
 
-def _render_piece(art, meta, mat_rgb, path, placard, describe, qr, tone, page_url, real_text=None, scrape=False, googly_chance=0.0, googly_strict=0.5):
+def _render_piece(art, meta, mat_rgb, path, placard, describe, qr, tone, page_url, real_text=None, scrape=False, googly_chance=0.0, googly_strict=0.5, fill=False):
     """Render one artwork to `path`: plain art, or a placard with an optional caption + QR.
     'real' captions come from `real_text` (Cleveland) or by scraping the Met page (scrape=True).
     Googly eyes are applied at random with probability `googly_chance` (0..1); `googly_strict`
@@ -822,7 +861,7 @@ def _render_piece(art, meta, mat_rgb, path, placard, describe, qr, tone, page_ur
     if desc:
         print(f"    + {describe}{f' ({caption_style})' if caption_style else ''}: {desc[:60]}...")
     link = page_url if (placard and describe != "off" and qr) else None
-    canvas = mat_with_placard(art, meta, mat_rgb, desc, link) if placard else mat_image(art, mat_rgb)
+    canvas = mat_with_placard(art, meta, mat_rgb, desc, link, fill) if placard else mat_image(art, mat_rgb, fill)
     canvas.save(path, "JPEG", quality=JPEG_Q)
     return caption_style, desc   # voice used (None for real/off) + the caption text, for the panel
 
@@ -859,10 +898,25 @@ def all_object_ids():
         pass
     return ids
 
-def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", subject="", holidays=False, weather=False, on_this_day=False, latitude=None, longitude=None, googly_chance=0.0, googly_strict=0.5):
+def met_size_hint(o):
+    """(width, height) in cm from a Met object's measurements, or None. The 'Overall'
+    element is the artwork itself (others are frame/mount/sheet); a rough screen for
+    'fill' mode so obviously wrong shapes are skipped before their image is fetched."""
+    els = o.get("measurements") or []
+    for pick in (lambda e: (e.get("elementName") or "").lower() == "overall", lambda e: True):
+        for e in els:
+            m = e.get("elementMeasurements") or {}
+            if pick(e) and m.get("Width") and m.get("Height"):
+                return float(m["Width"]), float(m["Height"])
+    return None
+
+def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", subject="", holidays=False, weather=False, on_this_day=False, latitude=None, longitude=None, googly_chance=0.0, googly_strict=0.5, fill=False, fill_tol=0.2):
     os.makedirs(TMP, exist_ok=True)
     LAST_PIECES.clear()
     avoid = avoid or set()
+    tw, th = fill_target(placard)
+    if fill:
+        print(f"  fill: only art within {int(fill_tol*100)}% of {tw}x{th}")
     bias = bias_terms(subject, holidays, seasonal, hemisphere, weather, on_this_day, latitude, longitude)
     # Gather candidate object IDs, then pull each object's record and download its
     # public-domain image until we have enough.
@@ -889,7 +943,7 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
         print("  source: whole collection (surprise me)")
         require_artists = None               # no artist lock — but the type filter still applies
         pool = all_object_ids()
-        oids = random.sample(pool, min(600, len(pool))) if pool else []
+        oids = random.sample(pool, min(1500 if fill else 600, len(pool))) if pool else []
     else:
         terms, require_artists = plan_search(query, theme)
         oids = []
@@ -925,9 +979,16 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
             img_url = o.get("primaryImage") or ""
             if not img_url:
                 continue
+            if fill:
+                hint = met_size_hint(o)          # catalogue dims ≠ photo dims, so be lenient here
+                if hint and crop_loss(*hint, tw, th) > fill_tol + 0.12:
+                    continue
             img = requests.get(img_url, headers=HEADERS, timeout=60)
             img.raise_for_status()
             art = Image.open(io.BytesIO(img.content)).convert("RGB")
+            if fill and crop_loss(*art.size, tw, th) > fill_tol:
+                print(f"  - shape {art.width}x{art.height} loses {int(100*crop_loss(*art.size, tw, th))}%: {o.get('title','?')[:40]}")
+                continue
             artist_s, culture, period = (o.get("artistDisplayName") or ""), (o.get("culture") or ""), (o.get("period") or "")
             cp = " · ".join(x for x in [culture, period] if x.strip()) if artist_s else period.strip()
             meta = {"title": o.get("title"), "artist": artist_s, "bio": o.get("artistDisplayBio"),
@@ -935,7 +996,7 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
                     "culture": culture, "objectName": o.get("objectName"), "culture_period": cp,
                     "credit": o.get("creditLine"), "museum": "The Metropolitan Museum of Art"}
             p = os.path.join(TMP, f"{len(paths)+1:02d}_{slug(o.get('title','art'))}.jpg")
-            caption_style, caption = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("objectURL"), scrape=True, googly_chance=googly_chance, googly_strict=googly_strict)
+            caption_style, caption = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("objectURL"), scrape=True, googly_chance=googly_chance, googly_strict=googly_strict, fill=fill)
             paths.append(p)
             LAST_PIECES.append({"title": o.get("title") or "", "source": o.get("_source_name", "The Met"),
                                 "artist": o.get("artistDisplayName") or o.get("culture") or "Unknown",
@@ -952,7 +1013,7 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
 CLE_API = "https://openaccess-api.clevelandart.org/api/artworks/"
 CLE_NAME = "Cleveland Museum of Art"
 
-def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", all_types=True, subject="", holidays=False, weather=False, on_this_day=False, latitude=None, longitude=None, googly_chance=0.0, googly_strict=0.5):
+def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", all_types=True, subject="", holidays=False, weather=False, on_this_day=False, latitude=None, longitude=None, googly_chance=0.0, googly_strict=0.5, fill=False, fill_tol=0.2):
     """Second source: Cleveland Museum of Art open access (keyless, CC0). Its API carries
     a real 'description', so 'real' captions need no scraping."""
     os.makedirs(TMP, exist_ok=True); LAST_PIECES.clear()
@@ -968,14 +1029,22 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
         q = random.choice(THEMES[theme])
     elif not q and theme == "mix":
         q = random.choice(TERM_POOL)
+    tw, th = fill_target(placard)
+    if fill:
+        print(f"  fill: only art within {int(fill_tol*100)}% of {tw}x{th}")
     if q:
         params["q"] = q; print(f"  cleveland: {q}")
-    else:                                        # museum: jump to a random page
-        total = met_json(CLE_API, params={**params, "limit": "1"}).get("info", {}).get("total", 0)
-        if total > 120:
-            params["skip"] = str(random.randint(0, total - 100))
+    else:
         print("  cleveland: whole collection")
-    data = met_json(CLE_API, params=params).get("data") or []
+    total = met_json(CLE_API, params={**params, "limit": "1"}).get("info", {}).get("total", 0)
+    data = []
+    for i in range(4 if fill else 1):            # fill mode rejects most shapes: pull a few pages
+        page = dict(params)
+        if not q and total > 120:                # whole collection: jump to a random page
+            page["skip"] = str(random.randint(0, total - 100))
+        elif i:                                  # a search: walk its pages in order
+            page["skip"] = str(i*100)
+        data += met_json(CLE_API, params=page).get("data") or []
     random.shuffle(data)
     paths = []
     for o in data:
@@ -993,6 +1062,14 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
             img_url = (imgs.get("print") or imgs.get("web") or {}).get("url")
             if not img_url:
                 continue
+            if fill:                             # Cleveland lists the image's own pixel size
+                w, h = (imgs.get("web") or {}).get("width"), (imgs.get("web") or {}).get("height")
+                try:
+                    loss = crop_loss(float(w), float(h), tw, th)
+                except (TypeError, ValueError):
+                    loss = None
+                if loss is not None and loss > fill_tol:
+                    continue
             cr = ((o.get("creators") or [{}])[0].get("description") or "")
             name, bio = cr, ""
             if "(" in cr:
@@ -1007,8 +1084,10 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
             if r is None:
                 continue
             art = Image.open(io.BytesIO(r.content)).convert("RGB")
+            if fill and crop_loss(*art.size, tw, th) > fill_tol:
+                continue
             p = os.path.join(TMP, f"{len(paths)+1:02d}_{slug(meta['title'])}.jpg")
-            caption_style, caption = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("url"), real_text=o.get("description"), googly_chance=googly_chance, googly_strict=googly_strict)
+            caption_style, caption = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("url"), real_text=o.get("description"), googly_chance=googly_chance, googly_strict=googly_strict, fill=fill)
             paths.append(p)
             LAST_PIECES.append({"title": meta["title"], "artist": name or meta["culture"] or "Unknown",
                                 "url": o.get("url") or "", "source": CLE_NAME, "id": f"cle:{o.get('id')}",
@@ -1021,7 +1100,7 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
             print(f"  ! skip {o.get('id')}: {str(e)[:120]}", file=sys.stderr)
     return paths
 
-def prep_local(files, mat_rgb, googly_chance=0.0, googly_strict=0.5):
+def prep_local(files, mat_rgb, googly_chance=0.0, googly_strict=0.5, fill=False):
     os.makedirs(TMP, exist_ok=True)
     out = []
     for f in files:
@@ -1031,7 +1110,7 @@ def prep_local(files, mat_rgb, googly_chance=0.0, googly_strict=0.5):
             im = add_googly_eyes(im, googly_strict)
         if googlied or im.size != CANVAS:
             p = os.path.join(TMP, f"local_{slug(os.path.basename(f))}.jpg")
-            mat_image(im, mat_rgb).save(p, "JPEG", quality=JPEG_Q); out.append(p)
+            mat_image(im, mat_rgb, fill).save(p, "JPEG", quality=JPEG_Q); out.append(p)
         else:
             out.append(f)
     return out
@@ -1071,12 +1150,12 @@ def _fetch_source(args, mat_rgb, count):
                                args.describe, args.types, args.qr, args.tone, avoid,
                                seasonal, args.hemisphere, args.all_types, args.subject, holidays,
                                weather, on_this_day, args.latitude, args.longitude, args.googly_chance,
-                               args.googly_strict)
+                               args.googly_strict, args.fill, args.fill_tolerance)
     return fetch_matted(count, args.query, mat_rgb, args.theme, args.placard, args.all_types,
                         args.describe, args.types, args.qr, args.tone, avoid, seasonal,
                         args.hemisphere, args.subject, holidays,
                         weather, on_this_day, args.latitude, args.longitude, args.googly_chance,
-                        args.googly_strict)
+                        args.googly_strict, args.fill, args.fill_tolerance)
 
 FAV_CHANCE = 0.2   # chance a scheduled run re-shows a favourite instead of fresh art
 
@@ -1085,7 +1164,7 @@ def _gather(args, mat_rgb, count):
     and used as a graceful fallback if fresh art can't be fetched. Preview and an explicit
     'change now' (--force) always fetch fresh; only automatic runs re-show favourites."""
     if args.files:
-        return prep_local(args.files, mat_rgb, args.googly_chance, args.googly_strict)
+        return prep_local(args.files, mat_rgb, args.googly_chance, args.googly_strict, args.fill)
     if not args.preview and not args.force and random.random() < FAV_CHANCE:
         fav = favourite_pick()
         if fav:
@@ -1313,6 +1392,10 @@ def main():
     ap.add_argument("--no-record", action="store_true",
                     help="display without adding to history (used when browsing back/forward)")
     ap.add_argument("--mat", choices=MAT_COLORS, default=cfg["mat"])
+    ap.add_argument("--fill", action=argparse.BooleanOptionalAction, default=cfg.get("fill", False),
+                    help="only pick art that (nearly) fills the screen, and show it edge to edge")
+    ap.add_argument("--fill-tolerance", dest="fill_tolerance", type=float, default=cfg.get("fill_tolerance", 0.2),
+                    help="max share of a picture that may be cropped away to fill the screen (0.1 strict … 0.3 loose)")
     ap.add_argument("--files", nargs="*")
     ap.add_argument("--no-select", action="store_true")
     ap.add_argument("--slideshow", type=int, default=None)
@@ -1339,6 +1422,7 @@ def main():
             setattr(args, name + "_chance", 1.0 if b else 0.0)
         setattr(args, name + "_chance", min(1.0, max(0.0, getattr(args, name + "_chance") or 0.0)))
     args.googly_strict = min(1.0, max(0.0, args.googly_strict if args.googly_strict is not None else 0.5))
+    args.fill_tolerance = min(0.5, max(0.0, args.fill_tolerance if args.fill_tolerance is not None else 0.2))
     try:
         run(args)
     except Exception as e:
