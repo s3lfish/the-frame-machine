@@ -19,17 +19,38 @@ echo "  ✓ Python: $PY"
 # 2. Dependencies
 echo "  • Installing Python packages (this can take a minute)…"
 "$PY" -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
-"$PY" -m pip install --quiet -r requirements.txt
+# Debian 12 / Ubuntu 24 / Raspberry Pi OS Bookworm mark the system Python "externally managed"
+# (PEP 668) and refuse a plain install; retry with the documented opt-out before giving up.
+"$PY" -m pip install --quiet -r requirements.txt \
+  || "$PY" -m pip install --quiet --break-system-packages -r requirements.txt
 echo "  ✓ Packages installed"
 
 # 2b. On Linux, make sure a serif font exists (the placard needs one; macOS has Georgia).
+#     `**` isn't recursive without globstar, so match with find instead.
 if [ "$(uname)" != "Darwin" ]; then
-  if ! ls /usr/share/fonts/**/LiberationSerif-Regular.ttf /usr/share/fonts/**/DejaVuSerif.ttf >/dev/null 2>&1 \
+  if ! find /usr/share/fonts \( -name 'LiberationSerif-Regular.ttf' -o -name 'DejaVuSerif.ttf' \) \
+         -print -quit 2>/dev/null | grep -q . \
      && ! fc-list 2>/dev/null | grep -qiE "liberation serif|dejavu serif"; then
     echo "  • No serif font found — installing one for the captions…"
     (sudo apt-get install -y fonts-liberation >/dev/null 2>&1) \
       || echo "  ⚠ Couldn't auto-install. For nicer captions run: sudo apt install fonts-liberation"
   fi
+fi
+
+# 2c. TV discovery pings the subnet and reads the ARP table to find the TV by MAC. net-tools
+#     is no longer installed by default on Debian-family systems, and without it the push just
+#     reports "Frame not found" forever.
+MISSING=""
+for TOOL in ping arp; do
+  command -v "$TOOL" >/dev/null 2>&1 || MISSING="$MISSING $TOOL"
+done
+if [ -n "$MISSING" ]; then
+  echo "  • Missing network tools ($MISSING) — installing them…"
+  (sudo apt-get install -y iputils-ping net-tools >/dev/null 2>&1) || true
+  for TOOL in ping arp; do
+    command -v "$TOOL" >/dev/null 2>&1 \
+      || echo "  ⚠ No '$TOOL'. The TV can't be found by MAC until you install it (sudo apt install iputils-ping net-tools)."
+  done
 fi
 
 # 3. TV MAC address

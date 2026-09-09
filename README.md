@@ -212,7 +212,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.frameart.pli
 # reload after edits:  launchctl bootout gui/$(id -u)/com.example.frameart && launchctl bootstrap ...
 ```
 
-**Linux (cron).** `30 7 * * *  FRAME_MAC=AA:.. /usr/bin/python3 /path/frame_push.py --fetch 1 --theme museum --placard --all-types --describe --replace`
+**Linux (cron).** `30 7 * * *  FRAME_MAC=AA:.. /usr/bin/python3 /path/frame_push.py --fetch 1 --theme museum --placard --all-types --describe real --replace`
 
 ## Gotchas
 

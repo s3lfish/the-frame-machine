@@ -17,7 +17,8 @@
     <string>--theme</string><string>museum</string>
     <string>--placard</string>
     <string>--all-types</string>
-    <string>--describe</string>
+    <!-- off | real | made-up ('made-up' needs an Anthropic API key) -->
+    <string>--describe</string><string>real</string>
     <string>--replace</string>
   </array>
   <key>StartCalendarInterval</key>

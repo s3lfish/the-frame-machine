@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is what Raspberry Pi OS Bookworm ships; 3.12 is the Docker base image.
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # Installing the real requirements.txt, rather than a test-only subset, so a
+      # dependency that has stopped resolving shows up here instead of on someone's Pi.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      # The placard falls back to Liberation Serif on Linux; without it _font() drops to
+      # PIL's tiny bitmap default and the text-layout test measures the wrong thing.
+      - name: Install the serif font the placard needs
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-liberation
+
+      - name: Tests
+        run: python -m unittest -v test_frame
+
+      - name: Byte-compile everything
+        run: python -m compileall -q app.py frame_push.py test_frame.py
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check install.sh syntax
+        run: bash -n install.sh
+      - name: Lint install.sh
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck
+          # Advisory: style findings shouldn't block a bug fix.
+          shellcheck --severity=error install.sh || true
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t frame-machine:ci .
+      # The image exists so the panel can find and wake the TV, which needs these
+      # commands present; a slim base image has none of them by default.
+      - name: Check the image has the commands discovery and scheduling shell out to
+        run: |
+          for tool in ping arp crontab; do
+            docker run --rm --entrypoint sh frame-machine:ci -c "command -v $tool" \
+              || { echo "::error::$tool missing from the image"; exit 1; }
+          done
+      - name: Check the panel imports inside the image
+        run: docker run --rm --entrypoint python frame-machine:ci -c "import app, frame_push; print('ok')"

@@ -23,7 +23,11 @@ PYTHON = sys.executable
 PREVIEW_PATH = os.path.join(tempfile.gettempdir(), "frame_preview.jpg")
 LABEL = "com.frameart.daily"
 PLIST = os.path.expanduser(f"~/Library/LaunchAgents/{LABEL}.plist")
-LOG = os.path.expanduser("~/Library/Logs/frameart.log")
+# macOS keeps user logs in ~/Library/Logs; that path doesn't exist anywhere else, and both
+# the cron line and the launchd job REDIRECT into it — a redirect into a missing directory
+# fails before the job runs at all, so on Linux nothing was ever scheduled successfully.
+LOG = os.path.expanduser("~/Library/Logs/frameart.log" if platform.system() == "Darwin"
+                         else "~/.local/state/frameart/frameart.log")
 
 app = Flask(__name__)
 
@@ -60,7 +64,9 @@ try:
     app.secret_key = open(_SK).read().strip() if os.path.exists(_SK) else None
     if not app.secret_key:
         app.secret_key = secrets.token_hex(16)
-        os.makedirs(fp.CFG, exist_ok=True); open(_SK, "w").write(app.secret_key)
+        os.makedirs(fp.CFG, exist_ok=True)
+        with open(os.open(_SK, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+            f.write(app.secret_key)
 except Exception:
     app.secret_key = "frame-machine-dev-key"
 
@@ -82,7 +88,7 @@ def _auth():
         return
     if request.method == "GET":
         return redirect("/login")
-    return ("", 401)
+    return (jsonify(ok=False, message="Session expired — reload the page and log in again."), 401)
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
@@ -163,9 +169,54 @@ def schedule_of(cfg):
 def _every_label(n, unit):
     return "once a day" if (n == 1 and unit == "days") else f"every {n} {unit[:-1] if n == 1 else unit}"
 
+# A cron step (*/N) only divides its own field evenly, so an interval that isn't a divisor
+# drifts: */7 in the hours field fires at 0,7,14,21 and then waits three hours. Snap to a
+# divisor instead, and report what was really scheduled rather than what was asked for.
+_STEPS_MIN = (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60)  # divisors of 60, plus hourly
+_STEPS_HR = (1, 2, 3, 4, 6, 8, 12)                       # divisors of 24
+
+def _nearest_step(n, options):
+    """The option closest to n, preferring the longer interval on a tie (firing less often is
+    a smaller surprise than firing twice as often)."""
+    return min(options, key=lambda o: (abs(o - n), -o))
+
+def _ordinal(n):
+    return f"{n}{'th' if 11 <= n % 100 <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+def cron_spec(interval, hh, mm):
+    """(spec, effective_minutes, description) for an interval in minutes. effective_minutes
+    differs from `interval` whenever cron can't express it, which the caller reports."""
+    if interval == 1440:
+        return f"{mm} {hh} * * *", 1440, f"once a day at {hh:02d}:{mm:02d}"
+    if interval < 60:
+        n = _nearest_step(interval, _STEPS_MIN)
+        if n == 60:                          # e.g. 45 min is nearer an hour than 30 minutes
+            return f"{mm} * * * *", 60, f"every hour at {mm:02d} minutes past"
+        return f"*/{n} * * * *", n, f"every {n} minute{'s' if n > 1 else ''}"
+    if interval < 1440:
+        h = _nearest_step(interval / 60, _STEPS_HR)
+        return f"{mm} */{h} * * *", h * 60, (f"every {h} hour{'s' if h > 1 else ''} "
+                                             f"at {mm:02d} minutes past")
+    d = max(1, min(31, round(interval / 1440)))
+    if d == 1:
+        return f"{mm} {hh} * * *", 1440, f"once a day at {hh:02d}:{mm:02d}"
+    return (f"{mm} {hh} */{d} * *", d * 1440,
+            f"every {d} days at {hh:02d}:{mm:02d} — on the 1st, {_ordinal(1 + d)}, … of each month, "
+            "since cron restarts the count when the month turns")
+
+def _log_dir_ready():
+    """Make sure LOG's directory exists. Both schedules redirect into it, and a redirect
+    into a missing directory fails before the job itself ever starts."""
+    try:
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        return True
+    except Exception:
+        return False
+
 def write_schedule(cfg):
     """Regenerate + reload the recurring job for any interval (launchd on macOS, cron on Linux)."""
     interval, n, unit = schedule_of(cfg)
+    log_note = "" if _log_dir_ready() else f" (couldn't create {os.path.dirname(LOG)} for the log)"
     try:
         hh, mm = map(int, cfg.get("time", "07:30").split(":"))
     except Exception:
@@ -197,18 +248,11 @@ def write_schedule(cfg):
         uid = os.getuid()
         subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LABEL}"], capture_output=True)
         r = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", PLIST], capture_output=True, text=True)
-        return f"Saved. The art will change {when}." if r.returncode == 0 \
+        return f"Saved. The art will change {when}.{log_note}" if r.returncode == 0 \
             else f"Settings saved, but scheduling failed: {r.stderr.strip()[:160]}"
 
     if sysname == "Linux":
-        if daily_at_time:
-            spec = f"{mm} {hh} * * *"
-        elif interval < 60:
-            spec = f"*/{interval} * * * *"
-        elif interval % 60 == 0 and interval // 60 <= 23:
-            spec = f"{mm} */{interval // 60} * * *"
-        else:                                   # cron can't express it exactly — approximate
-            spec = f"*/{min(59, interval)} * * * *" if interval < 1440 else f"{mm} {hh} * * *"
+        spec, effective, actual = cron_spec(interval, hh, mm)
         tag = "# frameart"
         line = f"{spec} {PYTHON} {SCRIPT} >> {LOG} 2>&1  {tag}"
         try:
@@ -217,11 +261,33 @@ def write_schedule(cfg):
             existing = []
         kept = [l for l in existing if tag not in l and l.strip()]
         cron = "\n".join(kept + [line]) + "\n"
-        r = subprocess.run(["crontab", "-"], input=cron, text=True, capture_output=True)
-        return f"Saved. Cron will change the art {when}." if r.returncode == 0 \
-            else f"Settings saved, but cron update failed: {r.stderr.strip()[:160]}"
+        try:
+            r = subprocess.run(["crontab", "-"], input=cron, text=True, capture_output=True)
+        except FileNotFoundError:
+            return ("Settings saved, but this machine has no `crontab`, so nothing is scheduled. "
+                    "Install cron (Debian/Ubuntu: sudo apt install cron) and save again, or run "
+                    "frame_push.py on a timer yourself.")
+        if r.returncode != 0:
+            return f"Settings saved, but cron update failed: {r.stderr.strip()[:160]}"
+        msg = f"Saved. Cron will change the art {actual}.{log_note}"
+        if effective != interval:
+            msg += f" (Cron can't express {_every_label(n, unit)} exactly, so it's rounded to that.)"
+        return msg
 
     return "Settings saved. (Automatic scheduling isn't supported on this OS — run frame_push.py on a timer yourself.)"
+
+def run_push(extra, timeout, what):
+    """Run frame_push.py with `extra` flags. Returns (CompletedProcess, None) or (None, message)
+    — a timeout or a missing interpreter has to come back as a message, because an uncaught
+    exception here is a 500 and the page's fetch() only ever parses JSON."""
+    try:
+        return subprocess.run([PYTHON, SCRIPT] + extra, capture_output=True,
+                              text=True, timeout=timeout), None
+    except subprocess.TimeoutExpired:
+        return None, (f"{what} took longer than {timeout}s and was stopped. The museum APIs may "
+                      "be slow — try again, or loosen the screen-fit setting.")
+    except Exception as e:
+        return None, f"Couldn't run frame_push.py: {str(e)[:160]}"
 
 # ---------- routes ----------
 @app.route("/")
@@ -240,31 +306,32 @@ def save():
 @app.route("/preview", methods=["POST"])
 def preview():
     cfg = {**fp.load_config(), **request.get_json(force=True)}
-    cmd = [PYTHON, SCRIPT, "--preview", PREVIEW_PATH] + flags_from(cfg)
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    r, err = run_push(["--preview", PREVIEW_PATH] + flags_from(cfg), 180, "The preview")
+    if err:
+        return jsonify(ok=False, message=err)
     if os.path.exists(PREVIEW_PATH) and r.returncode == 0:
         return jsonify(ok=True, image=f"/preview.jpg?t={int(time.time())}")
     return jsonify(ok=False, message=(r.stderr or r.stdout or "preview failed").strip()[-300:])
 
 @app.route("/preview.jpg")
 def preview_jpg():
-    return send_file(PREVIEW_PATH, mimetype="image/jpeg")
+    if os.path.exists(PREVIEW_PATH):
+        return send_file(PREVIEW_PATH, mimetype="image/jpeg")
+    return ("", 404)
 
 @app.route("/change-now", methods=["POST"])
 def change_now():
     cfg = {**fp.load_config(), **request.get_json(force=True)}
-    cmd = [PYTHON, SCRIPT, "--force"] + flags_from(cfg)
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    r, err = run_push(["--force"] + flags_from(cfg), 300, "Changing the art")
+    if err:
+        return jsonify(ok=False, message=err)
     tail = (r.stdout or "").strip().splitlines()[-3:]
     if r.returncode == 0:
         return jsonify(ok=True, message="Done — " + " / ".join(tail))
     return jsonify(ok=False, message=(r.stderr or r.stdout or "failed").strip()[-300:])
 
 def _read_status():
-    try:
-        return json.load(open(fp.STATUS))
-    except Exception:
-        return {}
+    return fp.read_status()
 
 @app.route("/state")
 def state():
@@ -305,12 +372,16 @@ def pin():
 @app.route("/ban", methods=["POST"])
 def ban():
     pid = _read_status().get("id")
-    if pid:
-        bl = fp._load_list(fp.BLOCKLIST)
-        if pid not in bl:
-            bl.append(pid); fp._save_list(fp.BLOCKLIST, bl)
-    r = subprocess.run([PYTHON, SCRIPT, "--force"] + flags_from(fp.load_config()),
-                       capture_output=True, text=True, timeout=300)
+    if not pid:                            # nothing identifiable recorded — banning would be a
+        return jsonify(ok=False,           # no-op, so don't change the art and pretend otherwise
+                       message="Don't know which piece is on the TV, so there's nothing to ban. "
+                               "Change the art once, then try again.")
+    bl = fp._load_list(fp.BLOCKLIST)
+    if pid not in bl:
+        bl.append(pid); fp._save_list(fp.BLOCKLIST, bl)
+    r, err = run_push(["--force"] + flags_from(fp.load_config()), 300, "Finding a replacement")
+    if err:
+        return jsonify(ok=False, message="Banned, but " + err[0].lower() + err[1:])
     return jsonify(ok=(r.returncode == 0),
                    message="Banned and replaced with something new." if r.returncode == 0
                            else "Banned; the replacement failed: " + (r.stderr or "")[-160:])
@@ -331,8 +402,12 @@ def _navigate(step):
     entry = nav[new]
     tmp = os.path.join(tempfile.gettempdir(), "frame_nav.jpg")
     shutil.copy(entry["file"], tmp)
-    r = subprocess.run([PYTHON, SCRIPT, "--force", "--files", tmp, "--no-record"],
-                       capture_output=True, text=True, timeout=300)
+    # --googly-chance 0: the saved image is a finished render, so a googly roll here would
+    # draw eyes onto the placard and re-mat what was already shown.
+    r, err = run_push(["--force", "--files", tmp, "--no-record", "--googly-chance", "0"],
+                      300, "Switching the art")
+    if err:
+        return jsonify(ok=False, message=err)
     if r.returncode != 0:
         return jsonify(ok=False, message="Couldn't switch: " + (r.stderr or "")[-160:])
     fp.nav_set(new)
@@ -468,6 +543,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    <option value="0.1">Fill the screen — only near-perfect fits (trim up to 10%)</option>
    <option value="0.2">Fill the screen — close enough (trim up to 20%)</option>
    <option value="0.3">Fill the screen — be generous (trim up to 30%)</option>
+   <option value="1">Fill the screen — always, cropping whatever it takes</option>
  </select>
  <p class="sub" id="fillhint" style="margin-top:8px"></p>
  <label class="chk" style="margin-top:14px"><input type="checkbox" id="placard">
@@ -616,7 +692,8 @@ const el = {content:$('content'), source:$('source'), all_types:$('all_types'), 
 function setSeg(val){document.querySelectorAll('#description button').forEach(b=>b.classList.toggle('on',b.dataset.v===val));
   el.tonerow.style.display = (val==='made-up') ? 'block' : 'none';}
 document.querySelectorAll('#description button').forEach(b=>b.onclick=()=>setSeg(b.dataset.v));
-function syncPlacard(){el.captionopts.style.display = el.placard.checked ? 'block' : 'none';}
+function syncPlacard(){el.captionopts.style.display = el.placard.checked ? 'block' : 'none';
+  if(typeof syncFill==='function') syncFill();}   // the label reintroduces a border in fill mode
 el.placard.onchange=syncPlacard;
 function syncTypes(){el.typegrid.classList.toggle('hidden', el.all_types.checked);}
 el.all_types.onchange=syncTypes;
@@ -670,13 +747,22 @@ function syncGoogly(){
 el.googly_strict.oninput=syncGoogly; syncGoogly();
 // screen fit: off, or a max-trim tolerance
 (()=>{const tol=cfg.fill_tolerance!=null?cfg.fill_tolerance:0.2;
-  el.fill.value=cfg.fill?['0.1','0.2','0.3'].reduce((a,b)=>Math.abs(b-tol)<Math.abs(a-tol)?b:a):'off';})();
-function syncFill(){const on=el.fill.value!=='off';
-  el.fillhint.textContent=on
-    ?'Skips anything that would need more trimming than that, so only wide, screen-shaped pieces get picked; edges are trimmed evenly. With the museum label on, the art fills the space beside the label instead. The mat colour only shows around the label.'
-    :'Every piece is shown whole, centred on a mat.';}
-el.fill.onchange=syncFill; syncFill();
+  el.fill.value=cfg.fill?['0.1','0.2','0.3','1'].reduce((a,b)=>Math.abs(b-tol)<Math.abs(a-tol)?b:a):'off';})();
+function syncFill(){const v=el.fill.value, on=v!=='off', always=(v==='1');
+  let t;
+  if(!on) t='Every piece is shown whole, centred on a mat.';
+  else if(always) t='Never skips a piece for its shape — edges are trimmed evenly until it fits. '
+    +'A portrait painting becomes a horizontal slice of itself (a tall 2:3 canvas loses about 62% '
+    +'of its area), so expect cropped-off heads on some pieces.';
+  else t='Skips anything that would need more trimming than that, so only wide, screen-shaped pieces '
+    +'get picked; edges are trimmed evenly.';
+  if(on&&el.placard.checked) t+=' The museum label is on, so the art fills only the space beside it '
+    +'and the mat colour still shows around the label — turn the label off for true edge to edge.';
+  if(on) t+=' Low-resolution scans are still skipped, however it is set, rather than being enlarged.';
+  el.fillhint.textContent=t;}
+el.fill.onchange=syncFill;
 syncPlacard();
+syncFill();
 const chosen=new Set(cfg.types||[]);
 document.querySelectorAll('.tcheck').forEach(c=>c.checked=chosen.has(c.dataset.type));
 syncTypes();
@@ -698,10 +784,12 @@ function collect(){return {description:document.querySelector('#description butt
   every:Math.max(1,parseInt(el.every.value)||1), every_unit:el.every_unit.value, time:el.time.value, mat:el.mat.value,
   fill:el.fill.value!=='off', fill_tolerance:el.fill.value==='off'?(cfg.fill_tolerance!=null?cfg.fill_tolerance:0.2):parseFloat(el.fill.value),
   mac:el.mac.value.trim(), replace:true};}
+async function readJson(r){try{return await r.json();}
+  catch(e){return {ok:false,message:'The panel returned an error ('+r.status+') — check its log.'};}}
 async function post(url,btn,label,working){el.status.textContent=label+'…';
   const old=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spin"></span>'+(working||'Working')+'…';
   try{const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(collect())});
-    const j=await r.json(); el.status.textContent=j.message||(j.ok?'Done.':'Something went wrong.');
+    const j=await readJson(r); el.status.textContent=j.message||(j.ok?'Done.':'Something went wrong.');
     if(j.image){el.pv.src=j.image;el.pv.style.display='block';}
   }catch(e){el.status.textContent='Error: '+e;} btn.disabled=false;btn.innerHTML=old;}
 el.save.onclick=()=>post('/save',el.save,'Saving','Saving');
@@ -710,7 +798,7 @@ el.now.onclick=async()=>{await post('/change-now',el.now,'Changing the art on yo
 el.nowtop.onclick=async()=>{await post('/change-now',el.nowtop,'Changing the art on your TV (can take a minute)','Changing');loadState();};
 async function nav(url,btn){el.status.textContent='Switching…';btn.disabled=true;const o=btn.innerHTML;
   btn.innerHTML='<span class="spin"></span>…';
-  const j=await (await fetch(url,{method:'POST'})).json();el.status.textContent=j.message;btn.disabled=false;btn.innerHTML=o;loadState();}
+  const j=await readJson(await fetch(url,{method:'POST'}));el.status.textContent=j.message;btn.disabled=false;btn.innerHTML=o;loadState();}
 el.back.onclick=()=>nav('/back',el.back);
 el.fwd.onclick=()=>nav('/forward',el.fwd);
 async function loadState(){try{const j=await (await fetch('/state')).json(); const s=j.status||{};
@@ -722,7 +810,7 @@ async function loadState(){try{const j=await (await fetch('/state')).json(); con
   el.stopwatch.style.display = waiting ? 'inline-block' : 'none';
   el.nowtitle.textContent=s.title?(s.title+(s.artist?(' — '+s.artist):'')):'';
   el.nowmeta.textContent=[s.source,s.when&&s.when.replace('T',' ')].filter(Boolean).join(' · ');
-  const esc=t=>String(t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  const esc=t=>String(t).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const rows=[['Date',s.date],['Medium',s.medium],['Dimensions',s.dimensions],['Culture',s.culture],['Credit',s.credit]]
     .filter(([k,v])=>v);
   el.nowdetails.innerHTML=rows.map(([k,v])=>`<div><span style="opacity:.55">${k}:</span> ${esc(v)}</div>`).join('');
@@ -735,15 +823,16 @@ async function loadState(){try{const j=await (await fetch('/state')).json(); con
   if(j.has_image){el.cur.src='/current.jpg?t='+Date.now();el.cur.style.display='block';}
   el.pin.textContent=j.pinned?'Let it change again':'Stop this from changing'; el.pin.classList.toggle('on',j.pinned);
   el.historylist.innerHTML=(j.history&&j.history.length)? j.history.map(h=>{
-    const t=(h.url?`<a href="${h.url}" target="_blank" style="color:var(--ink)">${h.title||'?'}</a>`:(h.title||'?'));
-    return `<div style="padding:5px 0;border-bottom:1px solid var(--line)">${t} <span style="opacity:.6">— ${h.source||''} · ${(h.when||'').replace('T',' ')}</span></div>`;
+    const title=esc(h.title||'?');
+    const t=(h.url?`<a href="${esc(h.url)}" target="_blank" style="color:var(--ink)">${title}</a>`:title);
+    return `<div style="padding:5px 0;border-bottom:1px solid var(--line)">${t} <span style="opacity:.6">— ${esc(h.source||'')} · ${esc((h.when||'').replace('T',' '))}</span></div>`;
   }).join('') : 'Nothing yet.';
 }catch(e){}}
-el.pin.onclick=async()=>{const j=await (await fetch('/pin',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
-el.ban.onclick=async()=>{el.status.textContent='Finding a replacement…';const j=await (await fetch('/ban',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
-el.fav.onclick=async()=>{const j=await (await fetch('/favourite',{method:'POST'})).json();el.status.textContent=j.message;};
-el.stopwatch.onclick=async()=>{const j=await (await fetch('/stop-watch',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
-el.dropvoice.onclick=async()=>{const j=await (await fetch('/drop-voice',{method:'POST'})).json();el.status.textContent=j.message;
+el.pin.onclick=async()=>{const j=await readJson(await fetch('/pin',{method:'POST'}));el.status.textContent=j.message;loadState();};
+el.ban.onclick=async()=>{el.status.textContent='Finding a replacement…';const j=await readJson(await fetch('/ban',{method:'POST'}));el.status.textContent=j.message;loadState();};
+el.fav.onclick=async()=>{const j=await readJson(await fetch('/favourite',{method:'POST'}));el.status.textContent=j.message;};
+el.stopwatch.onclick=async()=>{const j=await readJson(await fetch('/stop-watch',{method:'POST'}));el.status.textContent=j.message;loadState();};
+el.dropvoice.onclick=async()=>{const j=await readJson(await fetch('/drop-voice',{method:'POST'}));el.status.textContent=j.message;
   if(j.ok&&j.dropped){const row=voiceRow(j.dropped);if(row)setVoice(row,0);}
   loadState();};
 loadState();

@@ -13,7 +13,7 @@ Examples:
     python3 frame_push.py --preview /tmp/out.jpg --no-placard      # render only, don't touch the TV
 """
 
-import argparse, io, os, re, json, math, random, socket, subprocess, sys, time, warnings, datetime, html, platform
+import argparse, io, os, re, json, math, random, shutil, socket, subprocess, sys, time, warnings, datetime, html, platform
 import requests
 from PIL import Image, ImageDraw, ImageFont
 try:
@@ -280,6 +280,13 @@ def load_config():
         print(f"  ! config read: {str(e)[:80]}", file=sys.stderr)
     return cfg
 
+def read_status():
+    """The last recorded run outcome — what the panel believes is currently on the TV."""
+    try:
+        return json.load(open(STATUS))
+    except Exception:
+        return {}
+
 def write_status(ok, message, extra=None):
     """Record the last run's outcome (the dashboard + alerts read this)."""
     d = {"ok": ok, "when": datetime.datetime.now().isoformat(timespec="seconds"), "message": message}
@@ -344,38 +351,81 @@ def met_object(oid):
     return o
 
 # ---------- locate the TV by MAC (verify reachability, avoid stale ARP) ----------
-def _arp_ip_for_mac(mac):
+_MAC_RE = re.compile(r"\b(?:[0-9a-fA-F]{1,2}[:-]){5}[0-9a-fA-F]{1,2}\b")
+
+def _norm_mac(mac):
+    """A MAC as lowercase zero-padded octets, or None if it isn't one. Both sides need this
+    before they're compared: macOS/BSD `arp` prints octets unpadded (ether_ntoa), so a TV
+    whose MAC is a0:d0:5b:01:23:56 shows up as a0:d0:5b:1:23:56 and never matches raw."""
+    parts = re.split(r"[:-]", (mac or "").strip().lower())
+    if len(parts) != 6 or not all(re.fullmatch(r"[0-9a-f]{1,2}", p) for p in parts):
+        return None
+    return ":".join(p.zfill(2) for p in parts)
+
+def _arp_ips_for_mac(mac):
+    """Every IP the ARP table maps to `mac`, best candidate first. One device commonly has
+    two entries — a routable lease and a self-assigned 169.254.x link-local — and the
+    link-local one can't be connected to, so it sorts last rather than winning on table
+    order. (On a real LAN this is not rare: 3 of 31 entries on the machine this was found
+    on were such duplicates.)"""
+    want = _norm_mac(mac)
+    if not want:
+        return []
     try:
         out = subprocess.run(["arp", "-an"], capture_output=True, text=True, timeout=10).stdout
     except Exception:
-        return None
+        return []                                    # no `arp` command (see _net_tools_missing)
+    ips = []
     for line in out.splitlines():
-        if mac.lower() in line.lower():
-            m = re.search(r"\((\d+\.\d+\.\d+\.\d+)\)", line)
-            if m:
-                return m.group(1)
-    return None
+        m = re.search(r"\((\d+\.\d+\.\d+\.\d+)\)", line)
+        if not m:
+            continue
+        if any(_norm_mac(c) == want for c in _MAC_RE.findall(line)) and m.group(1) not in ips:
+            ips.append(m.group(1))
+    return sorted(ips, key=lambda ip: ip.startswith("169.254."))
+
+def _arp_ip_for_mac(mac):
+    """The best IP the ARP table maps to `mac`, or None."""
+    ips = _arp_ips_for_mac(mac)
+    return ips[0] if ips else None
 
 # 1-second timeout flag differs by OS: -t on macOS is seconds, but on Linux -t is TTL,
 # so Linux needs -W. (Getting this wrong makes a /24 sweep hang on every dead IP.)
 _PING = ["ping", "-c1"] + (["-t", "1"] if platform.system() == "Darwin" else ["-W", "1"])
 
+def _net_tools_missing():
+    """Which discovery commands this machine hasn't got. Slim containers (python:*-slim) and
+    minimal distros ship neither; without them a MAC can't be mapped to an IP at all."""
+    return [t for t in ("ping", "arp") if not shutil.which(t)]
+
+APT_FOR = {"ping": "iputils-ping", "arp": "net-tools"}
+
 def _reachable(ip):
-    return subprocess.run(_PING + [ip], capture_output=True).returncode == 0
+    try:
+        return subprocess.run(_PING + [ip], capture_output=True).returncode == 0
+    except Exception:
+        return False                                 # no `ping` command — fall back to ARP
 
 def resolve_frame_ip(preferred, mac):
-    # trust preferred only if it actually answers and maps to the MAC
-    if preferred and _reachable(preferred):
-        if _arp_ip_for_mac(mac) == preferred:
-            return preferred
-    # otherwise sweep, then take a *reachable* ARP match
+    # trust preferred only if it actually answers and maps to the MAC (it may not be the
+    # table's first entry for that MAC, so check every address the MAC resolves to)
+    if preferred and _reachable(preferred) and preferred in _arp_ips_for_mac(mac):
+        return preferred
+    # otherwise sweep to populate the ARP table, then take a *reachable* ARP match
     base = ".".join((preferred or "192.168.1.1").split(".")[:3])
-    procs = [subprocess.Popen(_PING + [f"{base}.{i}"],
-             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for i in range(1, 255)]
-    for p in procs:
-        p.wait()
-    ip = _arp_ip_for_mac(mac)
-    return ip
+    if shutil.which("ping"):
+        procs = [subprocess.Popen(_PING + [f"{base}.{i}"],
+                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for i in range(1, 255)]
+        for p in procs:
+            p.wait()
+    # Actually verify, which this never did despite the comment above: a MAC with both a
+    # lease and a link-local entry could hand back the address that can't be connected to.
+    # A Frame in standby still answers ping even with its art port shut, so ping is enough.
+    candidates = _arp_ips_for_mac(mac)
+    for ip in candidates:
+        if _port_open(ip) or _reachable(ip):
+            return ip
+    return candidates[0] if candidates else None
 
 # ---------- wake + art-channel readiness ----------
 def wake(mac):
@@ -441,14 +491,33 @@ def tv_in_use(art):
     except Exception:
         return False                                     # can't tell — don't block the push
 
+def _pid_is_watcher(pid):
+    """True if `pid` really is one of our watchers. A pid file outlives a SIGKILLed watcher, so
+    without this a recycled pid wedges every later run into 'a watcher is already waiting' —
+    and /stop-watch would signal an unrelated process."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return b"frame_push" in f.read()
+    except FileNotFoundError:
+        pass                                             # no /proc (macOS) — ask ps instead
+    except Exception:
+        return True
+    try:
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+        return "frame_push" in out if out else False
+    except Exception:
+        return True                                      # can't tell — don't spawn a duplicate
+
 def _watcher_running():
     """True if a watcher process from a previous run is still alive (avoid duplicates)."""
     try:
-        pid = int(open(WATCH_PID).read().strip())
+        with open(WATCH_PID) as f:
+            pid = int(f.read().strip())
         os.kill(pid, 0)                                  # signal 0 only checks the pid exists
-        return True
     except Exception:
         return False
+    return _pid_is_watcher(pid)
 
 def _spawn_watcher(argv):
     """Relaunch this script in --watch mode, detached, so it outlives a quick
@@ -678,10 +747,16 @@ def _truncate_prose(text, limit=620):
         return text
     out = ""
     for sent in re.split(r"(?<=[.!?]) ", text):
-        if out and len(out) + len(sent) + 1 > limit:
+        if len(out) + len(sent) + 1 > limit:
             break
         out = (out + " " + sent).strip()
-    return out or text[:limit].rsplit(" ", 1)[0] + "…"
+    if out:
+        return out
+    # Nothing fit whole: either the first sentence is longer than the whole budget, or the
+    # prose has no sentence breaks at all. The old `if out and ...` accepted that first
+    # segment regardless of length, so a caption could run to any length — past ~1600
+    # characters it collides with the QR code, and past ~3000 it runs off the canvas.
+    return text[:limit].rsplit(" ", 1)[0] + "…"
 
 def met_prose(object_url):
     """The Met's own curatorial description, scraped from the public object page
@@ -931,7 +1006,8 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
     avoid = avoid or set()
     tw, th = fill_target(placard)
     if fill:
-        print(f"  fill: only art within {int(fill_tol*100)}% of {tw}x{th}")
+        print(f"  fill: {tw}x{th}, " + ("cropping anything to fit" if fill_tol >= 1.0
+              else f"only art that loses under {int(fill_tol*100)}%"))
     bias = bias_terms(subject, holidays, seasonal, hemisphere, weather, on_this_day, latitude, longitude)
     # Gather candidate object IDs, then pull each object's record and download its
     # public-domain image until we have enough.
@@ -1049,12 +1125,19 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
         q = random.choice(TERM_POOL)
     tw, th = fill_target(placard)
     if fill:
-        print(f"  fill: only art within {int(fill_tol*100)}% of {tw}x{th}")
+        print(f"  fill: {tw}x{th}, " + ("cropping anything to fit" if fill_tol >= 1.0
+              else f"only art that loses under {int(fill_tol*100)}%"))
     if q:
         params["q"] = q; print(f"  cleveland: {q}")
     else:
         print("  cleveland: whole collection")
-    total = met_json(CLE_API, params={**params, "limit": "1"}).get("info", {}).get("total", 0)
+    def _cle_total():                        # `info` can come back null, not just absent
+        return ((met_json(CLE_API, params={**params, "limit": "1"}).get("info") or {}).get("total") or 0)
+    # Without a total the whole-collection branch below can't jump to a random page, and would
+    # hand back the same first 100 records on every run — so it's worth one retry.
+    total = _cle_total()
+    if not total and not q:
+        total = _cle_total()
     data = []
     for i in range(4 if fill else 1):            # fill mode rejects most shapes: pull a few pages
         page = dict(params)
@@ -1133,7 +1216,10 @@ def prep_local(files, mat_rgb, googly_chance=0.0, googly_strict=0.5, fill=False)
             im = add_googly_eyes(im, googly_strict)
         if googlied or im.size != CANVAS:
             p = os.path.join(TMP, f"local_{slug(os.path.basename(f))}.jpg")
-            mat_image(im, mat_rgb, fill).save(p, "JPEG", quality=JPEG_Q); out.append(p)
+            # A CANVAS-sized input is already frame-shaped (a history image, a favourite, a 4K
+            # photo); matting it again would shrink it to 86% inside a second mat.
+            done = im if im.size == CANVAS else mat_image(im, mat_rgb, fill)
+            done.save(p, "JPEG", quality=JPEG_Q); out.append(p)
         else:
             out.append(f)
     return out
@@ -1249,7 +1335,11 @@ def run(args):
 
     if load_config().get("pinned") and not args.force and not args.files:
         print("Kept — leaving the current art in place.")
-        write_status(True, "Kept — art left unchanged", LAST_PIECES[0] if LAST_PIECES else {})
+        # Nothing was prepped on this path, so LAST_PIECES is empty — carry the recorded piece
+        # forward instead, or the panel loses what it knows is on the TV (thumbnail details,
+        # Favourite, Drop-voice and Never-show-again all read this).
+        keep = {k: v for k, v in read_status().items() if k not in ("ok", "when", "message")}
+        write_status(True, "Kept — art left unchanged", keep)
         return
     if not args.mac:
         raise RuntimeError("No TV MAC set. Pass --mac AA:BB:CC:DD:EE:FF, or set FRAME_MAC in "
@@ -1257,6 +1347,12 @@ def run(args):
     print("Locating the Frame...")
     ip = resolve_frame_ip(args.ip, args.mac)
     if not ip:
+        missing = _net_tools_missing()
+        if missing:                          # no amount of waiting will conjure up the command
+            raise RuntimeError(
+                f"Can't locate the Frame: this machine has no {' or '.join(missing)} command, "
+                "which is how a MAC address is mapped to an IP. Install it (Debian/Ubuntu: "
+                f"sudo apt install {' '.join(APT_FOR[t] for t in missing)}).")
         return _maybe_watch(args, f"Frame (MAC {args.mac}) not found on the network.")
     print(f"Frame at {ip}")
 
@@ -1447,7 +1543,8 @@ def main():
     ap.add_argument("--fill", action=argparse.BooleanOptionalAction, default=cfg.get("fill", False),
                     help="only pick art that (nearly) fills the screen, and show it edge to edge")
     ap.add_argument("--fill-tolerance", dest="fill_tolerance", type=float, default=cfg.get("fill_tolerance", 0.2),
-                    help="max share of a picture that may be cropped away to fill the screen (0.1 strict … 0.3 loose)")
+                    help="max share of a picture that may be cropped away to fill the screen "
+                         "(0.1 strict … 0.3 loose, 1.0 = crop anything rather than skip it)")
     ap.add_argument("--max-upscale", dest="max_upscale", type=float, default=cfg.get("max_upscale", 1.6),
                     help="skip images that would need enlarging more than this on screen (1.6 = a 2400px-wide scan is the smallest that fills a 4K screen)")
     ap.add_argument("--files", nargs="*")
@@ -1476,7 +1573,9 @@ def main():
             setattr(args, name + "_chance", 1.0 if b else 0.0)
         setattr(args, name + "_chance", min(1.0, max(0.0, getattr(args, name + "_chance") or 0.0)))
     args.googly_strict = min(1.0, max(0.0, args.googly_strict if args.googly_strict is not None else 0.5))
-    args.fill_tolerance = min(0.5, max(0.0, args.fill_tolerance if args.fill_tolerance is not None else 0.2))
+    # 1.0 means "crop whatever it takes": crop_loss is always < 1, so nothing is ever
+    # skipped for its shape. Anything lower skips art that would need more trimming.
+    args.fill_tolerance = min(1.0, max(0.0, args.fill_tolerance if args.fill_tolerance is not None else 0.2))
     args.max_upscale = max(1.0, args.max_upscale or 1.6)
     try:
         run(args)
