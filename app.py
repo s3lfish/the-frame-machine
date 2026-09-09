@@ -23,7 +23,11 @@ PYTHON = sys.executable
 PREVIEW_PATH = os.path.join(tempfile.gettempdir(), "frame_preview.jpg")
 LABEL = "com.frameart.daily"
 PLIST = os.path.expanduser(f"~/Library/LaunchAgents/{LABEL}.plist")
-LOG = os.path.expanduser("~/Library/Logs/frameart.log")
+# macOS keeps user logs in ~/Library/Logs; that path doesn't exist anywhere else, and both
+# the cron line and the launchd job REDIRECT into it — a redirect into a missing directory
+# fails before the job runs at all, so on Linux nothing was ever scheduled successfully.
+LOG = os.path.expanduser("~/Library/Logs/frameart.log" if platform.system() == "Darwin"
+                         else "~/.local/state/frameart/frameart.log")
 
 app = Flask(__name__)
 
@@ -200,9 +204,19 @@ def cron_spec(interval, hh, mm):
             f"every {d} days at {hh:02d}:{mm:02d} — on the 1st, {_ordinal(1 + d)}, … of each month, "
             "since cron restarts the count when the month turns")
 
+def _log_dir_ready():
+    """Make sure LOG's directory exists. Both schedules redirect into it, and a redirect
+    into a missing directory fails before the job itself ever starts."""
+    try:
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        return True
+    except Exception:
+        return False
+
 def write_schedule(cfg):
     """Regenerate + reload the recurring job for any interval (launchd on macOS, cron on Linux)."""
     interval, n, unit = schedule_of(cfg)
+    log_note = "" if _log_dir_ready() else f" (couldn't create {os.path.dirname(LOG)} for the log)"
     try:
         hh, mm = map(int, cfg.get("time", "07:30").split(":"))
     except Exception:
@@ -234,7 +248,7 @@ def write_schedule(cfg):
         uid = os.getuid()
         subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LABEL}"], capture_output=True)
         r = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", PLIST], capture_output=True, text=True)
-        return f"Saved. The art will change {when}." if r.returncode == 0 \
+        return f"Saved. The art will change {when}.{log_note}" if r.returncode == 0 \
             else f"Settings saved, but scheduling failed: {r.stderr.strip()[:160]}"
 
     if sysname == "Linux":
@@ -255,7 +269,7 @@ def write_schedule(cfg):
                     "frame_push.py on a timer yourself.")
         if r.returncode != 0:
             return f"Settings saved, but cron update failed: {r.stderr.strip()[:160]}"
-        msg = f"Saved. Cron will change the art {actual}."
+        msg = f"Saved. Cron will change the art {actual}.{log_note}"
         if effective != interval:
             msg += f" (Cron can't express {_every_label(n, unit)} exactly, so it's rounded to that.)"
         return msg

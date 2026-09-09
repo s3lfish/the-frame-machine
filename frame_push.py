@@ -495,7 +495,8 @@ def _pid_is_watcher(pid):
 def _watcher_running():
     """True if a watcher process from a previous run is still alive (avoid duplicates)."""
     try:
-        pid = int(open(WATCH_PID).read().strip())
+        with open(WATCH_PID) as f:
+            pid = int(f.read().strip())
         os.kill(pid, 0)                                  # signal 0 only checks the pid exists
     except Exception:
         return False
@@ -729,10 +730,16 @@ def _truncate_prose(text, limit=620):
         return text
     out = ""
     for sent in re.split(r"(?<=[.!?]) ", text):
-        if out and len(out) + len(sent) + 1 > limit:
+        if len(out) + len(sent) + 1 > limit:
             break
         out = (out + " " + sent).strip()
-    return out or text[:limit].rsplit(" ", 1)[0] + "…"
+    if out:
+        return out
+    # Nothing fit whole: either the first sentence is longer than the whole budget, or the
+    # prose has no sentence breaks at all. The old `if out and ...` accepted that first
+    # segment regardless of length, so a caption could run to any length — past ~1600
+    # characters it collides with the QR code, and past ~3000 it runs off the canvas.
+    return text[:limit].rsplit(" ", 1)[0] + "…"
 
 def met_prose(object_url):
     """The Met's own curatorial description, scraped from the public object page
