@@ -6,6 +6,11 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ## [Unreleased]
 
 ### Fixed
+- **No more blurry blow-ups.** Some museum "original" scans are tiny (one was 750px
+  wide) and were being enlarged 4-5x to fill a 4K screen. Any picture that would need
+  enlarging more than 1.6x in the current layout is now skipped (`--max-upscale`,
+  config `max_upscale`). Cleveland is screened from its image metadata before
+  download; the Met after. (2026-09-09)
 - **A search that finds nothing no longer ends in a blank.** If the configured search
   comes up empty (e.g. an obscure "on this day" term the museum has no art for), the run
   retries: the same search without the date/weather terms, then the other museum, then

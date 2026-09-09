@@ -233,7 +233,7 @@ DEFAULTS = {"mac": "", "ip": None, "description": "made-up", "content": "museum"
             "googly": False, "googly_chance": 0.0, "googly_strictness": 0.5,
             "latitude": None, "longitude": None, "tone_weights": {},
             "watch_on_fail": True, "watch_interval": 60, "watch_timeout": 180,
-            "fill": False, "fill_tolerance": 0.2}
+            "fill": False, "fill_tolerance": 0.2, "max_upscale": 1.6}
 _TONE_WEIGHTS = None   # per-run override for made-up-voice weights (set from --tone-weights), else config's
 STATUS = os.path.join(CFG, "status.json")   # last-run outcome, for alerts + the dashboard
 HISTORY = os.path.join(CFG, "history.json") # recently displayed pieces (for no-repeats + dashboard)
@@ -543,6 +543,21 @@ def crop_loss(aw, ah, tw, th):
         return 1.0
     r, t = aw/ah, tw/th
     return 1 - t/r if r > t else 1 - r/t
+
+def display_scale(aw, ah, placard, fill):
+    """How much an aw x ah source gets enlarged on screen under the current layout
+    (1.0 = shown at its own size). Old, small museum scans blown up 4-5x look awful."""
+    if fill:
+        tw, th = fill_target(placard)
+        return max(tw/aw, th/ah)               # cover-crop: the tighter axis sets the scale
+    if placard:
+        rw, rh = fill_target(True)
+        return min(rw/aw, rh/ah)
+    return min(CANVAS[0]*MARGIN/aw, CANVAS[1]*MARGIN/ah)
+
+def too_small(aw, ah, placard, fill, max_upscale):
+    """True if showing an aw x ah source would enlarge it more than `max_upscale`."""
+    return not aw or not ah or display_scale(aw, ah, placard, fill) > max_upscale
 
 def cover_crop(art, tw, th):
     """Centre-crop `art` to the tw:th shape and scale it to exactly tw x th."""
@@ -910,7 +925,7 @@ def met_size_hint(o):
                 return float(m["Width"]), float(m["Height"])
     return None
 
-def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", subject="", holidays=False, weather=False, on_this_day=False, latitude=None, longitude=None, googly_chance=0.0, googly_strict=0.5, fill=False, fill_tol=0.2):
+def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", subject="", holidays=False, weather=False, on_this_day=False, latitude=None, longitude=None, googly_chance=0.0, googly_strict=0.5, fill=False, fill_tol=0.2, max_upscale=1.6):
     os.makedirs(TMP, exist_ok=True)
     LAST_PIECES.clear()
     avoid = avoid or set()
@@ -989,6 +1004,9 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
             if fill and crop_loss(*art.size, tw, th) > fill_tol:
                 print(f"  - shape {art.width}x{art.height} loses {int(100*crop_loss(*art.size, tw, th))}%: {o.get('title','?')[:40]}")
                 continue
+            if too_small(*art.size, placard, fill, max_upscale):
+                print(f"  - too small ({art.width}x{art.height}, would be enlarged {display_scale(*art.size, placard, fill):.1f}x): {o.get('title','?')[:40]}")
+                continue
             artist_s, culture, period = (o.get("artistDisplayName") or ""), (o.get("culture") or ""), (o.get("period") or "")
             cp = " · ".join(x for x in [culture, period] if x.strip()) if artist_s else period.strip()
             meta = {"title": o.get("title"), "artist": artist_s, "bio": o.get("artistDisplayBio"),
@@ -1013,7 +1031,7 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
 CLE_API = "https://openaccess-api.clevelandart.org/api/artworks/"
 CLE_NAME = "Cleveland Museum of Art"
 
-def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", all_types=True, subject="", holidays=False, weather=False, on_this_day=False, latitude=None, longitude=None, googly_chance=0.0, googly_strict=0.5, fill=False, fill_tol=0.2):
+def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="off", types=None, qr=True, tone="whimsical", avoid=None, seasonal=False, hemisphere="north", all_types=True, subject="", holidays=False, weather=False, on_this_day=False, latitude=None, longitude=None, googly_chance=0.0, googly_strict=0.5, fill=False, fill_tol=0.2, max_upscale=1.6):
     """Second source: Cleveland Museum of Art open access (keyless, CC0). Its API carries
     a real 'description', so 'real' captions need no scraping."""
     os.makedirs(TMP, exist_ok=True); LAST_PIECES.clear()
@@ -1059,16 +1077,18 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
                 if not any(k in typ for k in allowed):
                     continue
             imgs = o.get("images") or {}
-            img_url = (imgs.get("print") or imgs.get("web") or {}).get("url")
+            best = imgs.get("print") or imgs.get("web") or {}
+            img_url = best.get("url")
             if not img_url:
                 continue
-            if fill:                             # Cleveland lists the image's own pixel size
-                w, h = (imgs.get("web") or {}).get("width"), (imgs.get("web") or {}).get("height")
-                try:
-                    loss = crop_loss(float(w), float(h), tw, th)
-                except (TypeError, ValueError):
-                    loss = None
-                if loss is not None and loss > fill_tol:
+            try:                                 # Cleveland lists each image's own pixel size
+                w, h = float(best.get("width")), float(best.get("height"))
+            except (TypeError, ValueError):
+                w = h = None
+            if w and h:
+                if fill and crop_loss(w, h, tw, th) > fill_tol:
+                    continue
+                if too_small(w, h, placard, fill, max_upscale):
                     continue
             cr = ((o.get("creators") or [{}])[0].get("description") or "")
             name, bio = cr, ""
@@ -1085,6 +1105,9 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
                 continue
             art = Image.open(io.BytesIO(r.content)).convert("RGB")
             if fill and crop_loss(*art.size, tw, th) > fill_tol:
+                continue
+            if too_small(*art.size, placard, fill, max_upscale):
+                print(f"  - too small ({art.width}x{art.height}): {meta['title'][:40]}")
                 continue
             p = os.path.join(TMP, f"{len(paths)+1:02d}_{slug(meta['title'])}.jpg")
             caption_style, caption = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone, o.get("url"), real_text=o.get("description"), googly_chance=googly_chance, googly_strict=googly_strict, fill=fill)
@@ -1153,13 +1176,13 @@ def _fetch_source(args, mat_rgb, count, relax=0, src=None):
                                 args.describe, args.types, args.qr, args.tone, avoid,
                                 seasonal, args.hemisphere, args.all_types, args.subject, holidays,
                                 weather, on_this_day, args.latitude, args.longitude, args.googly_chance,
-                                args.googly_strict, args.fill, args.fill_tolerance)
+                                args.googly_strict, args.fill, args.fill_tolerance, args.max_upscale)
     else:
         paths = fetch_matted(count, args.query, mat_rgb, args.theme, args.placard, args.all_types,
                              args.describe, args.types, args.qr, args.tone, avoid, seasonal,
                              args.hemisphere, args.subject, holidays,
                              weather, on_this_day, args.latitude, args.longitude, args.googly_chance,
-                             args.googly_strict, args.fill, args.fill_tolerance)
+                             args.googly_strict, args.fill, args.fill_tolerance, args.max_upscale)
     return paths, src
 
 def _fetch_with_retries(args, mat_rgb, count):
@@ -1425,6 +1448,8 @@ def main():
                     help="only pick art that (nearly) fills the screen, and show it edge to edge")
     ap.add_argument("--fill-tolerance", dest="fill_tolerance", type=float, default=cfg.get("fill_tolerance", 0.2),
                     help="max share of a picture that may be cropped away to fill the screen (0.1 strict … 0.3 loose)")
+    ap.add_argument("--max-upscale", dest="max_upscale", type=float, default=cfg.get("max_upscale", 1.6),
+                    help="skip images that would need enlarging more than this on screen (1.6 = a 2400px-wide scan is the smallest that fills a 4K screen)")
     ap.add_argument("--files", nargs="*")
     ap.add_argument("--no-select", action="store_true")
     ap.add_argument("--slideshow", type=int, default=None)
@@ -1452,6 +1477,7 @@ def main():
         setattr(args, name + "_chance", min(1.0, max(0.0, getattr(args, name + "_chance") or 0.0)))
     args.googly_strict = min(1.0, max(0.0, args.googly_strict if args.googly_strict is not None else 0.5))
     args.fill_tolerance = min(0.5, max(0.0, args.fill_tolerance if args.fill_tolerance is not None else 0.2))
+    args.max_upscale = max(1.0, args.max_upscale or 1.6)
     try:
         run(args)
     except Exception as e:
