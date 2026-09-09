@@ -671,29 +671,113 @@ class TestLogPath(unittest.TestCase):
 
 
 # ------------------------------------------------------------------------- the panel
+SERVICE_COMMANDS = ("crontab", "launchctl")
+
+
+class NoServiceControl:
+    """Intercept every subprocess call app.py makes, so a test can never reach the real
+    `crontab` or `launchctl`. write_schedule() controls a live service, and HOME
+    redirection alone does NOT protect it: launchctl acts on the job's LABEL, so a
+    bootout/bootstrap fires against the real loaded job however the plist path is
+    redirected. A test run on a real install used to swap the machine's own schedule.
+
+    `handler(cmd)` returns a CompletedProcess or raises (e.g. FileNotFoundError).
+    """
+
+    class Done:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+    def __init__(self, handler=None):
+        self.handler, self.calls = handler, []
+
+    def __enter__(self):
+        self._real = app.subprocess.run
+
+        def fake(cmd, *a, **k):
+            self.calls.append(cmd)
+            if self.handler:
+                return self.handler(cmd)
+            return self.Done()
+        app.subprocess.run = fake
+        return self
+
+    def __exit__(self, *exc):
+        app.subprocess.run = self._real
+        return False
+
+    def service_calls(self):
+        return [c for c in self.calls
+                if isinstance(c, (list, tuple)) and c and c[0] in SERVICE_COMMANDS]
+
+
 class TestPanelRoutes(TempState):
     def setUp(self):
         super().setUp()
         self.client = app.app.test_client()
 
+    def _forcing_platform(self, name):
+        """Pin platform.system() so each write_schedule branch is testable on any host."""
+        real = app.platform.system
+        app.platform.system = lambda: name
+        self.addCleanup(lambda: setattr(app.platform, "system", real))
+
     def test_save_reports_a_message_when_there_is_no_crontab(self):
         """Bug: the unguarded `crontab -` call made /save a 500 on any Linux host
         without cron — after the settings had already been written."""
-        real = app.subprocess.run
+        self._forcing_platform("Linux")
 
         def no_crontab(cmd, *a, **k):
             if cmd and cmd[0] == "crontab":
                 raise FileNotFoundError("crontab")
-            return real(cmd, *a, **k)
-        app.subprocess.run = no_crontab
-        try:
+            return NoServiceControl.Done()
+        with NoServiceControl(no_crontab):
             r = self.client.post("/save", json={"content": "museum", "mat": "charcoal",
                                                 "description": "off", "every": 2,
                                                 "every_unit": "days", "time": "07:30"})
-            self.assertEqual(r.status_code, 200)
-            self.assertIn("crontab", r.get_json()["message"])
-        finally:
-            app.subprocess.run = real
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("crontab", r.get_json()["message"])
+
+    def test_save_on_linux_writes_the_interval_it_reports(self):
+        self._forcing_platform("Linux")
+        with NoServiceControl() as sp:
+            r = self.client.post("/save", json={"content": "museum", "mat": "charcoal",
+                                                "description": "off", "every": 2,
+                                                "every_unit": "days", "time": "07:30"})
+        self.assertEqual(r.status_code, 200)
+        written = [c for c in sp.calls if c and c[0] == "crontab" and c[-1] == "-"]
+        self.assertTrue(written, "no crontab was installed")
+        self.assertIn("every 2 days", r.get_json()["message"])
+
+    def test_save_on_macos_writes_a_plist_without_touching_a_real_service(self):
+        """The Darwin branch shells out to launchctl. It must be reachable in tests
+        without bootout/bootstrap ever hitting the machine's own job."""
+        self._forcing_platform("Darwin")
+        with NoServiceControl() as sp:
+            r = self.client.post("/save", json={"content": "museum", "mat": "charcoal",
+                                                "description": "off", "every": 30,
+                                                "every_unit": "minutes", "time": "07:30"})
+        self.assertEqual(r.status_code, 200)
+        verbs = [c[1] for c in sp.calls if c and c[0] == "launchctl" and len(c) > 1]
+        self.assertEqual(verbs, ["bootout", "bootstrap"])
+        self.assertTrue(app.PLIST.startswith(_HOME),
+                        f"the plist path escaped the test HOME: {app.PLIST}")
+        with open(app.PLIST) as f:
+            plist = f.read()
+        self.assertIn("<key>StartInterval</key><integer>1800</integer>", plist)
+
+    def test_no_service_control_command_escapes_to_the_real_subprocess(self):
+        """The guard itself: /save must not reach a real crontab or launchctl. Getting
+        this wrong once already swapped a live 30-minute schedule for a 2-day one."""
+        for platform_name in ("Linux", "Darwin"):
+            with self.subTest(platform=platform_name):
+                self._forcing_platform(platform_name)
+                with NoServiceControl() as sp:
+                    self.client.post("/save", json={"content": "museum", "mat": "charcoal",
+                                                    "description": "off", "every": 30,
+                                                    "every_unit": "minutes", "time": "07:30"})
+                self.assertTrue(sp.service_calls(),
+                                "the branch under test never tried a service command")
 
     def test_ban_refuses_rather_than_replacing_without_banning(self):
         """Bug: with no recorded id it banned nothing but still changed the art."""
