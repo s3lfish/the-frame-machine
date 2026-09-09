@@ -182,6 +182,66 @@ class TestMacNormalisation(unittest.TestCase):
             fp.subprocess.run = real_run
 
 
+class TestArpCandidateOrdering(unittest.TestCase):
+    """Bug: one device often has two ARP entries — a routable lease and a self-assigned
+    169.254.x link-local. Returning the table's first match handed back the address that
+    cannot be connected to, and resolve_frame_ip returned it without the reachability
+    check its own comment promised."""
+
+    TABLE = ("? (169.254.35.135) at b6:e7:5c:d0:b:b2 on en1 [ethernet]\n"
+             "? (192.168.4.23) at b6:e7:5c:d0:0b:b2 on en1 ifscope [ethernet]\n"
+             "? (192.168.4.64) at a0:d0:5b:a0:e9:89 on en1 ifscope [ethernet]\n")
+
+    def _with_table(self, text):
+        class Result:
+            stdout = text
+        real = fp.subprocess.run
+        fp.subprocess.run = lambda *a, **k: Result()
+        self.addCleanup(lambda: setattr(fp.subprocess, "run", real))
+
+    def test_a_routable_address_beats_a_link_local_one(self):
+        self._with_table(self.TABLE)
+        self.assertEqual(fp._arp_ips_for_mac("b6:e7:5c:d0:0b:b2"),
+                         ["192.168.4.23", "169.254.35.135"])
+        self.assertEqual(fp._arp_ip_for_mac("b6:e7:5c:d0:0b:b2"), "192.168.4.23")
+
+    def test_a_single_entry_is_unaffected(self):
+        self._with_table(self.TABLE)
+        self.assertEqual(fp._arp_ips_for_mac("a0:d0:5b:a0:e9:89"), ["192.168.4.64"])
+
+    def test_duplicate_ips_are_not_repeated(self):
+        self._with_table(self.TABLE * 3)
+        self.assertEqual(fp._arp_ips_for_mac("a0:d0:5b:a0:e9:89"), ["192.168.4.64"])
+
+    def test_an_unknown_mac_yields_nothing(self):
+        self._with_table(self.TABLE)
+        self.assertEqual(fp._arp_ips_for_mac("de:ad:be:ef:00:01"), [])
+        self.assertIsNone(fp._arp_ip_for_mac("de:ad:be:ef:00:01"))
+
+    def test_resolve_skips_a_candidate_that_does_not_answer(self):
+        """The check the old comment claimed but never did."""
+        self._with_table(self.TABLE)
+        fp.shutil.which = lambda t: None          # no ping binary: skip the sweep
+        self.addCleanup(lambda: setattr(fp, "shutil", __import__("shutil")))
+        reachable = {"192.168.4.23"}
+        real_reach, real_port = fp._reachable, fp._port_open
+        fp._reachable = lambda ip: ip in reachable
+        fp._port_open = lambda ip, *a, **k: False
+        self.addCleanup(lambda: (setattr(fp, "_reachable", real_reach),
+                                 setattr(fp, "_port_open", real_port)))
+        self.assertEqual(fp.resolve_frame_ip(None, "b6:e7:5c:d0:0b:b2"), "192.168.4.23")
+        reachable.clear()                          # nothing answers -> still offer the best
+        self.assertEqual(fp.resolve_frame_ip(None, "b6:e7:5c:d0:0b:b2"), "192.168.4.23")
+
+    def test_a_preferred_ip_is_honoured_even_when_it_is_not_the_first_entry(self):
+        self._with_table(self.TABLE)
+        real = fp._reachable
+        fp._reachable = lambda ip: True
+        self.addCleanup(lambda: setattr(fp, "_reachable", real))
+        self.assertEqual(fp.resolve_frame_ip("192.168.4.23", "b6:e7:5c:d0:0b:b2"),
+                         "192.168.4.23")
+
+
 class TestDiscoveryToolsMissing(unittest.TestCase):
     """Bug: a missing `ping` crashed with FileNotFoundError; a missing `arp` reported
     "Frame not found" forever."""

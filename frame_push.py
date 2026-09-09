@@ -362,21 +362,32 @@ def _norm_mac(mac):
         return None
     return ":".join(p.zfill(2) for p in parts)
 
-def _arp_ip_for_mac(mac):
+def _arp_ips_for_mac(mac):
+    """Every IP the ARP table maps to `mac`, best candidate first. One device commonly has
+    two entries — a routable lease and a self-assigned 169.254.x link-local — and the
+    link-local one can't be connected to, so it sorts last rather than winning on table
+    order. (On a real LAN this is not rare: 3 of 31 entries on the machine this was found
+    on were such duplicates.)"""
     want = _norm_mac(mac)
     if not want:
-        return None
+        return []
     try:
         out = subprocess.run(["arp", "-an"], capture_output=True, text=True, timeout=10).stdout
     except Exception:
-        return None                                  # no `arp` command (see _net_tools_missing)
+        return []                                    # no `arp` command (see _net_tools_missing)
+    ips = []
     for line in out.splitlines():
         m = re.search(r"\((\d+\.\d+\.\d+\.\d+)\)", line)
         if not m:
             continue
-        if any(_norm_mac(c) == want for c in _MAC_RE.findall(line)):
-            return m.group(1)
-    return None
+        if any(_norm_mac(c) == want for c in _MAC_RE.findall(line)) and m.group(1) not in ips:
+            ips.append(m.group(1))
+    return sorted(ips, key=lambda ip: ip.startswith("169.254."))
+
+def _arp_ip_for_mac(mac):
+    """The best IP the ARP table maps to `mac`, or None."""
+    ips = _arp_ips_for_mac(mac)
+    return ips[0] if ips else None
 
 # 1-second timeout flag differs by OS: -t on macOS is seconds, but on Linux -t is TTL,
 # so Linux needs -W. (Getting this wrong makes a /24 sweep hang on every dead IP.)
@@ -396,10 +407,10 @@ def _reachable(ip):
         return False                                 # no `ping` command — fall back to ARP
 
 def resolve_frame_ip(preferred, mac):
-    # trust preferred only if it actually answers and maps to the MAC
-    if preferred and _reachable(preferred):
-        if _arp_ip_for_mac(mac) == preferred:
-            return preferred
+    # trust preferred only if it actually answers and maps to the MAC (it may not be the
+    # table's first entry for that MAC, so check every address the MAC resolves to)
+    if preferred and _reachable(preferred) and preferred in _arp_ips_for_mac(mac):
+        return preferred
     # otherwise sweep to populate the ARP table, then take a *reachable* ARP match
     base = ".".join((preferred or "192.168.1.1").split(".")[:3])
     if shutil.which("ping"):
@@ -407,8 +418,14 @@ def resolve_frame_ip(preferred, mac):
                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for i in range(1, 255)]
         for p in procs:
             p.wait()
-    ip = _arp_ip_for_mac(mac)
-    return ip
+    # Actually verify, which this never did despite the comment above: a MAC with both a
+    # lease and a link-local entry could hand back the address that can't be connected to.
+    # A Frame in standby still answers ping even with its art port shut, so ping is enough.
+    candidates = _arp_ips_for_mac(mac)
+    for ip in candidates:
+        if _port_open(ip) or _reachable(ip):
+            return ip
+    return candidates[0] if candidates else None
 
 # ---------- wake + art-channel readiness ----------
 def wake(mac):
