@@ -351,16 +351,31 @@ def met_object(oid):
     return o
 
 # ---------- locate the TV by MAC (verify reachability, avoid stale ARP) ----------
+_MAC_RE = re.compile(r"\b(?:[0-9a-fA-F]{1,2}[:-]){5}[0-9a-fA-F]{1,2}\b")
+
+def _norm_mac(mac):
+    """A MAC as lowercase zero-padded octets, or None if it isn't one. Both sides need this
+    before they're compared: macOS/BSD `arp` prints octets unpadded (ether_ntoa), so a TV
+    whose MAC is a0:d0:5b:01:23:56 shows up as a0:d0:5b:1:23:56 and never matches raw."""
+    parts = re.split(r"[:-]", (mac or "").strip().lower())
+    if len(parts) != 6 or not all(re.fullmatch(r"[0-9a-f]{1,2}", p) for p in parts):
+        return None
+    return ":".join(p.zfill(2) for p in parts)
+
 def _arp_ip_for_mac(mac):
+    want = _norm_mac(mac)
+    if not want:
+        return None
     try:
         out = subprocess.run(["arp", "-an"], capture_output=True, text=True, timeout=10).stdout
     except Exception:
-        return None
+        return None                                  # no `arp` command (see _net_tools_missing)
     for line in out.splitlines():
-        if mac.lower() in line.lower():
-            m = re.search(r"\((\d+\.\d+\.\d+\.\d+)\)", line)
-            if m:
-                return m.group(1)
+        m = re.search(r"\((\d+\.\d+\.\d+\.\d+)\)", line)
+        if not m:
+            continue
+        if any(_norm_mac(c) == want for c in _MAC_RE.findall(line)):
+            return m.group(1)
     return None
 
 # 1-second timeout flag differs by OS: -t on macOS is seconds, but on Linux -t is TTL,
@@ -459,14 +474,32 @@ def tv_in_use(art):
     except Exception:
         return False                                     # can't tell — don't block the push
 
+def _pid_is_watcher(pid):
+    """True if `pid` really is one of our watchers. A pid file outlives a SIGKILLed watcher, so
+    without this a recycled pid wedges every later run into 'a watcher is already waiting' —
+    and /stop-watch would signal an unrelated process."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return b"frame_push" in f.read()
+    except FileNotFoundError:
+        pass                                             # no /proc (macOS) — ask ps instead
+    except Exception:
+        return True
+    try:
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+        return "frame_push" in out if out else False
+    except Exception:
+        return True                                      # can't tell — don't spawn a duplicate
+
 def _watcher_running():
     """True if a watcher process from a previous run is still alive (avoid duplicates)."""
     try:
         pid = int(open(WATCH_PID).read().strip())
         os.kill(pid, 0)                                  # signal 0 only checks the pid exists
-        return True
     except Exception:
         return False
+    return _pid_is_watcher(pid)
 
 def _spawn_watcher(argv):
     """Relaunch this script in --watch mode, detached, so it outlives a quick
@@ -1072,7 +1105,13 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
         params["q"] = q; print(f"  cleveland: {q}")
     else:
         print("  cleveland: whole collection")
-    total = met_json(CLE_API, params={**params, "limit": "1"}).get("info", {}).get("total", 0)
+    def _cle_total():                        # `info` can come back null, not just absent
+        return ((met_json(CLE_API, params={**params, "limit": "1"}).get("info") or {}).get("total") or 0)
+    # Without a total the whole-collection branch below can't jump to a random page, and would
+    # hand back the same first 100 records on every run — so it's worth one retry.
+    total = _cle_total()
+    if not total and not q:
+        total = _cle_total()
     data = []
     for i in range(4 if fill else 1):            # fill mode rejects most shapes: pull a few pages
         page = dict(params)
@@ -1151,7 +1190,10 @@ def prep_local(files, mat_rgb, googly_chance=0.0, googly_strict=0.5, fill=False)
             im = add_googly_eyes(im, googly_strict)
         if googlied or im.size != CANVAS:
             p = os.path.join(TMP, f"local_{slug(os.path.basename(f))}.jpg")
-            mat_image(im, mat_rgb, fill).save(p, "JPEG", quality=JPEG_Q); out.append(p)
+            # A CANVAS-sized input is already frame-shaped (a history image, a favourite, a 4K
+            # photo); matting it again would shrink it to 86% inside a second mat.
+            done = im if im.size == CANVAS else mat_image(im, mat_rgb, fill)
+            done.save(p, "JPEG", quality=JPEG_Q); out.append(p)
         else:
             out.append(f)
     return out

@@ -60,7 +60,9 @@ try:
     app.secret_key = open(_SK).read().strip() if os.path.exists(_SK) else None
     if not app.secret_key:
         app.secret_key = secrets.token_hex(16)
-        os.makedirs(fp.CFG, exist_ok=True); open(_SK, "w").write(app.secret_key)
+        os.makedirs(fp.CFG, exist_ok=True)
+        with open(os.open(_SK, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+            f.write(app.secret_key)
 except Exception:
     app.secret_key = "frame-machine-dev-key"
 
@@ -82,7 +84,7 @@ def _auth():
         return
     if request.method == "GET":
         return redirect("/login")
-    return ("", 401)
+    return (jsonify(ok=False, message="Session expired — reload the page and log in again."), 401)
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
@@ -260,6 +262,19 @@ def write_schedule(cfg):
 
     return "Settings saved. (Automatic scheduling isn't supported on this OS — run frame_push.py on a timer yourself.)"
 
+def run_push(extra, timeout, what):
+    """Run frame_push.py with `extra` flags. Returns (CompletedProcess, None) or (None, message)
+    — a timeout or a missing interpreter has to come back as a message, because an uncaught
+    exception here is a 500 and the page's fetch() only ever parses JSON."""
+    try:
+        return subprocess.run([PYTHON, SCRIPT] + extra, capture_output=True,
+                              text=True, timeout=timeout), None
+    except subprocess.TimeoutExpired:
+        return None, (f"{what} took longer than {timeout}s and was stopped. The museum APIs may "
+                      "be slow — try again, or loosen the screen-fit setting.")
+    except Exception as e:
+        return None, f"Couldn't run frame_push.py: {str(e)[:160]}"
+
 # ---------- routes ----------
 @app.route("/")
 def index():
@@ -277,21 +292,25 @@ def save():
 @app.route("/preview", methods=["POST"])
 def preview():
     cfg = {**fp.load_config(), **request.get_json(force=True)}
-    cmd = [PYTHON, SCRIPT, "--preview", PREVIEW_PATH] + flags_from(cfg)
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    r, err = run_push(["--preview", PREVIEW_PATH] + flags_from(cfg), 180, "The preview")
+    if err:
+        return jsonify(ok=False, message=err)
     if os.path.exists(PREVIEW_PATH) and r.returncode == 0:
         return jsonify(ok=True, image=f"/preview.jpg?t={int(time.time())}")
     return jsonify(ok=False, message=(r.stderr or r.stdout or "preview failed").strip()[-300:])
 
 @app.route("/preview.jpg")
 def preview_jpg():
-    return send_file(PREVIEW_PATH, mimetype="image/jpeg")
+    if os.path.exists(PREVIEW_PATH):
+        return send_file(PREVIEW_PATH, mimetype="image/jpeg")
+    return ("", 404)
 
 @app.route("/change-now", methods=["POST"])
 def change_now():
     cfg = {**fp.load_config(), **request.get_json(force=True)}
-    cmd = [PYTHON, SCRIPT, "--force"] + flags_from(cfg)
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    r, err = run_push(["--force"] + flags_from(cfg), 300, "Changing the art")
+    if err:
+        return jsonify(ok=False, message=err)
     tail = (r.stdout or "").strip().splitlines()[-3:]
     if r.returncode == 0:
         return jsonify(ok=True, message="Done — " + " / ".join(tail))
@@ -346,8 +365,9 @@ def ban():
     bl = fp._load_list(fp.BLOCKLIST)
     if pid not in bl:
         bl.append(pid); fp._save_list(fp.BLOCKLIST, bl)
-    r = subprocess.run([PYTHON, SCRIPT, "--force"] + flags_from(fp.load_config()),
-                       capture_output=True, text=True, timeout=300)
+    r, err = run_push(["--force"] + flags_from(fp.load_config()), 300, "Finding a replacement")
+    if err:
+        return jsonify(ok=False, message="Banned, but " + err[0].lower() + err[1:])
     return jsonify(ok=(r.returncode == 0),
                    message="Banned and replaced with something new." if r.returncode == 0
                            else "Banned; the replacement failed: " + (r.stderr or "")[-160:])
@@ -368,8 +388,12 @@ def _navigate(step):
     entry = nav[new]
     tmp = os.path.join(tempfile.gettempdir(), "frame_nav.jpg")
     shutil.copy(entry["file"], tmp)
-    r = subprocess.run([PYTHON, SCRIPT, "--force", "--files", tmp, "--no-record"],
-                       capture_output=True, text=True, timeout=300)
+    # --googly-chance 0: the saved image is a finished render, so a googly roll here would
+    # draw eyes onto the placard and re-mat what was already shown.
+    r, err = run_push(["--force", "--files", tmp, "--no-record", "--googly-chance", "0"],
+                      300, "Switching the art")
+    if err:
+        return jsonify(ok=False, message=err)
     if r.returncode != 0:
         return jsonify(ok=False, message="Couldn't switch: " + (r.stderr or "")[-160:])
     fp.nav_set(new)
@@ -735,10 +759,12 @@ function collect(){return {description:document.querySelector('#description butt
   every:Math.max(1,parseInt(el.every.value)||1), every_unit:el.every_unit.value, time:el.time.value, mat:el.mat.value,
   fill:el.fill.value!=='off', fill_tolerance:el.fill.value==='off'?(cfg.fill_tolerance!=null?cfg.fill_tolerance:0.2):parseFloat(el.fill.value),
   mac:el.mac.value.trim(), replace:true};}
+async function readJson(r){try{return await r.json();}
+  catch(e){return {ok:false,message:'The panel returned an error ('+r.status+') — check its log.'};}}
 async function post(url,btn,label,working){el.status.textContent=label+'…';
   const old=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spin"></span>'+(working||'Working')+'…';
   try{const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(collect())});
-    const j=await r.json(); el.status.textContent=j.message||(j.ok?'Done.':'Something went wrong.');
+    const j=await readJson(r); el.status.textContent=j.message||(j.ok?'Done.':'Something went wrong.');
     if(j.image){el.pv.src=j.image;el.pv.style.display='block';}
   }catch(e){el.status.textContent='Error: '+e;} btn.disabled=false;btn.innerHTML=old;}
 el.save.onclick=()=>post('/save',el.save,'Saving','Saving');
@@ -747,7 +773,7 @@ el.now.onclick=async()=>{await post('/change-now',el.now,'Changing the art on yo
 el.nowtop.onclick=async()=>{await post('/change-now',el.nowtop,'Changing the art on your TV (can take a minute)','Changing');loadState();};
 async function nav(url,btn){el.status.textContent='Switching…';btn.disabled=true;const o=btn.innerHTML;
   btn.innerHTML='<span class="spin"></span>…';
-  const j=await (await fetch(url,{method:'POST'})).json();el.status.textContent=j.message;btn.disabled=false;btn.innerHTML=o;loadState();}
+  const j=await readJson(await fetch(url,{method:'POST'}));el.status.textContent=j.message;btn.disabled=false;btn.innerHTML=o;loadState();}
 el.back.onclick=()=>nav('/back',el.back);
 el.fwd.onclick=()=>nav('/forward',el.fwd);
 async function loadState(){try{const j=await (await fetch('/state')).json(); const s=j.status||{};
@@ -759,7 +785,7 @@ async function loadState(){try{const j=await (await fetch('/state')).json(); con
   el.stopwatch.style.display = waiting ? 'inline-block' : 'none';
   el.nowtitle.textContent=s.title?(s.title+(s.artist?(' — '+s.artist):'')):'';
   el.nowmeta.textContent=[s.source,s.when&&s.when.replace('T',' ')].filter(Boolean).join(' · ');
-  const esc=t=>String(t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  const esc=t=>String(t).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const rows=[['Date',s.date],['Medium',s.medium],['Dimensions',s.dimensions],['Culture',s.culture],['Credit',s.credit]]
     .filter(([k,v])=>v);
   el.nowdetails.innerHTML=rows.map(([k,v])=>`<div><span style="opacity:.55">${k}:</span> ${esc(v)}</div>`).join('');
@@ -772,15 +798,16 @@ async function loadState(){try{const j=await (await fetch('/state')).json(); con
   if(j.has_image){el.cur.src='/current.jpg?t='+Date.now();el.cur.style.display='block';}
   el.pin.textContent=j.pinned?'Let it change again':'Stop this from changing'; el.pin.classList.toggle('on',j.pinned);
   el.historylist.innerHTML=(j.history&&j.history.length)? j.history.map(h=>{
-    const t=(h.url?`<a href="${h.url}" target="_blank" style="color:var(--ink)">${h.title||'?'}</a>`:(h.title||'?'));
-    return `<div style="padding:5px 0;border-bottom:1px solid var(--line)">${t} <span style="opacity:.6">— ${h.source||''} · ${(h.when||'').replace('T',' ')}</span></div>`;
+    const title=esc(h.title||'?');
+    const t=(h.url?`<a href="${esc(h.url)}" target="_blank" style="color:var(--ink)">${title}</a>`:title);
+    return `<div style="padding:5px 0;border-bottom:1px solid var(--line)">${t} <span style="opacity:.6">— ${esc(h.source||'')} · ${esc((h.when||'').replace('T',' '))}</span></div>`;
   }).join('') : 'Nothing yet.';
 }catch(e){}}
-el.pin.onclick=async()=>{const j=await (await fetch('/pin',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
-el.ban.onclick=async()=>{el.status.textContent='Finding a replacement…';const j=await (await fetch('/ban',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
-el.fav.onclick=async()=>{const j=await (await fetch('/favourite',{method:'POST'})).json();el.status.textContent=j.message;};
-el.stopwatch.onclick=async()=>{const j=await (await fetch('/stop-watch',{method:'POST'})).json();el.status.textContent=j.message;loadState();};
-el.dropvoice.onclick=async()=>{const j=await (await fetch('/drop-voice',{method:'POST'})).json();el.status.textContent=j.message;
+el.pin.onclick=async()=>{const j=await readJson(await fetch('/pin',{method:'POST'}));el.status.textContent=j.message;loadState();};
+el.ban.onclick=async()=>{el.status.textContent='Finding a replacement…';const j=await readJson(await fetch('/ban',{method:'POST'}));el.status.textContent=j.message;loadState();};
+el.fav.onclick=async()=>{const j=await readJson(await fetch('/favourite',{method:'POST'}));el.status.textContent=j.message;};
+el.stopwatch.onclick=async()=>{const j=await readJson(await fetch('/stop-watch',{method:'POST'}));el.status.textContent=j.message;loadState();};
+el.dropvoice.onclick=async()=>{const j=await readJson(await fetch('/drop-voice',{method:'POST'}));el.status.textContent=j.message;
   if(j.ok&&j.dropped){const row=voiceRow(j.dropped);if(row)setVoice(row,0);}
   loadState();};
 loadState();
