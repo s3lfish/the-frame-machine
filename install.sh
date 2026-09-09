@@ -32,6 +32,22 @@ if [ "$(uname)" != "Darwin" ]; then
   fi
 fi
 
+# 2c. TV discovery pings the subnet and reads the ARP table to find the TV by MAC. net-tools
+#     is no longer installed by default on Debian-family systems, and without it the push just
+#     reports "Frame not found" forever.
+MISSING=""
+for TOOL in ping arp; do
+  command -v "$TOOL" >/dev/null 2>&1 || MISSING="$MISSING $TOOL"
+done
+if [ -n "$MISSING" ]; then
+  echo "  • Missing network tools ($MISSING) — installing them…"
+  (sudo apt-get install -y iputils-ping net-tools >/dev/null 2>&1) || true
+  for TOOL in ping arp; do
+    command -v "$TOOL" >/dev/null 2>&1 \
+      || echo "  ⚠ No '$TOOL'. The TV can't be found by MAC until you install it (sudo apt install iputils-ping net-tools)."
+  done
+fi
+
 # 3. TV MAC address
 CFG="$HOME/.config/frame"; mkdir -p "$CFG"
 EXISTING_MAC="$("$PY" - <<'PY' 2>/dev/null || true

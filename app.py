@@ -163,6 +163,41 @@ def schedule_of(cfg):
 def _every_label(n, unit):
     return "once a day" if (n == 1 and unit == "days") else f"every {n} {unit[:-1] if n == 1 else unit}"
 
+# A cron step (*/N) only divides its own field evenly, so an interval that isn't a divisor
+# drifts: */7 in the hours field fires at 0,7,14,21 and then waits three hours. Snap to a
+# divisor instead, and report what was really scheduled rather than what was asked for.
+_STEPS_MIN = (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60)  # divisors of 60, plus hourly
+_STEPS_HR = (1, 2, 3, 4, 6, 8, 12)                       # divisors of 24
+
+def _nearest_step(n, options):
+    """The option closest to n, preferring the longer interval on a tie (firing less often is
+    a smaller surprise than firing twice as often)."""
+    return min(options, key=lambda o: (abs(o - n), -o))
+
+def _ordinal(n):
+    return f"{n}{'th' if 11 <= n % 100 <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+def cron_spec(interval, hh, mm):
+    """(spec, effective_minutes, description) for an interval in minutes. effective_minutes
+    differs from `interval` whenever cron can't express it, which the caller reports."""
+    if interval == 1440:
+        return f"{mm} {hh} * * *", 1440, f"once a day at {hh:02d}:{mm:02d}"
+    if interval < 60:
+        n = _nearest_step(interval, _STEPS_MIN)
+        if n == 60:                          # e.g. 45 min is nearer an hour than 30 minutes
+            return f"{mm} * * * *", 60, f"every hour at {mm:02d} minutes past"
+        return f"*/{n} * * * *", n, f"every {n} minute{'s' if n > 1 else ''}"
+    if interval < 1440:
+        h = _nearest_step(interval / 60, _STEPS_HR)
+        return f"{mm} */{h} * * *", h * 60, (f"every {h} hour{'s' if h > 1 else ''} "
+                                             f"at {mm:02d} minutes past")
+    d = max(1, min(31, round(interval / 1440)))
+    if d == 1:
+        return f"{mm} {hh} * * *", 1440, f"once a day at {hh:02d}:{mm:02d}"
+    return (f"{mm} {hh} */{d} * *", d * 1440,
+            f"every {d} days at {hh:02d}:{mm:02d} — on the 1st, {_ordinal(1 + d)}, … of each month, "
+            "since cron restarts the count when the month turns")
+
 def write_schedule(cfg):
     """Regenerate + reload the recurring job for any interval (launchd on macOS, cron on Linux)."""
     interval, n, unit = schedule_of(cfg)
@@ -201,14 +236,7 @@ def write_schedule(cfg):
             else f"Settings saved, but scheduling failed: {r.stderr.strip()[:160]}"
 
     if sysname == "Linux":
-        if daily_at_time:
-            spec = f"{mm} {hh} * * *"
-        elif interval < 60:
-            spec = f"*/{interval} * * * *"
-        elif interval % 60 == 0 and interval // 60 <= 23:
-            spec = f"{mm} */{interval // 60} * * *"
-        else:                                   # cron can't express it exactly — approximate
-            spec = f"*/{min(59, interval)} * * * *" if interval < 1440 else f"{mm} {hh} * * *"
+        spec, effective, actual = cron_spec(interval, hh, mm)
         tag = "# frameart"
         line = f"{spec} {PYTHON} {SCRIPT} >> {LOG} 2>&1  {tag}"
         try:
@@ -217,9 +245,18 @@ def write_schedule(cfg):
             existing = []
         kept = [l for l in existing if tag not in l and l.strip()]
         cron = "\n".join(kept + [line]) + "\n"
-        r = subprocess.run(["crontab", "-"], input=cron, text=True, capture_output=True)
-        return f"Saved. Cron will change the art {when}." if r.returncode == 0 \
-            else f"Settings saved, but cron update failed: {r.stderr.strip()[:160]}"
+        try:
+            r = subprocess.run(["crontab", "-"], input=cron, text=True, capture_output=True)
+        except FileNotFoundError:
+            return ("Settings saved, but this machine has no `crontab`, so nothing is scheduled. "
+                    "Install cron (Debian/Ubuntu: sudo apt install cron) and save again, or run "
+                    "frame_push.py on a timer yourself.")
+        if r.returncode != 0:
+            return f"Settings saved, but cron update failed: {r.stderr.strip()[:160]}"
+        msg = f"Saved. Cron will change the art {actual}."
+        if effective != interval:
+            msg += f" (Cron can't express {_every_label(n, unit)} exactly, so it's rounded to that.)"
+        return msg
 
     return "Settings saved. (Automatic scheduling isn't supported on this OS — run frame_push.py on a timer yourself.)"
 
@@ -261,10 +298,7 @@ def change_now():
     return jsonify(ok=False, message=(r.stderr or r.stdout or "failed").strip()[-300:])
 
 def _read_status():
-    try:
-        return json.load(open(fp.STATUS))
-    except Exception:
-        return {}
+    return fp.read_status()
 
 @app.route("/state")
 def state():
@@ -305,10 +339,13 @@ def pin():
 @app.route("/ban", methods=["POST"])
 def ban():
     pid = _read_status().get("id")
-    if pid:
-        bl = fp._load_list(fp.BLOCKLIST)
-        if pid not in bl:
-            bl.append(pid); fp._save_list(fp.BLOCKLIST, bl)
+    if not pid:                            # nothing identifiable recorded — banning would be a
+        return jsonify(ok=False,           # no-op, so don't change the art and pretend otherwise
+                       message="Don't know which piece is on the TV, so there's nothing to ban. "
+                               "Change the art once, then try again.")
+    bl = fp._load_list(fp.BLOCKLIST)
+    if pid not in bl:
+        bl.append(pid); fp._save_list(fp.BLOCKLIST, bl)
     r = subprocess.run([PYTHON, SCRIPT, "--force"] + flags_from(fp.load_config()),
                        capture_output=True, text=True, timeout=300)
     return jsonify(ok=(r.returncode == 0),

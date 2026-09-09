@@ -13,7 +13,7 @@ Examples:
     python3 frame_push.py --preview /tmp/out.jpg --no-placard      # render only, don't touch the TV
 """
 
-import argparse, io, os, re, json, math, random, socket, subprocess, sys, time, warnings, datetime, html, platform
+import argparse, io, os, re, json, math, random, shutil, socket, subprocess, sys, time, warnings, datetime, html, platform
 import requests
 from PIL import Image, ImageDraw, ImageFont
 try:
@@ -280,6 +280,13 @@ def load_config():
         print(f"  ! config read: {str(e)[:80]}", file=sys.stderr)
     return cfg
 
+def read_status():
+    """The last recorded run outcome — what the panel believes is currently on the TV."""
+    try:
+        return json.load(open(STATUS))
+    except Exception:
+        return {}
+
 def write_status(ok, message, extra=None):
     """Record the last run's outcome (the dashboard + alerts read this)."""
     d = {"ok": ok, "when": datetime.datetime.now().isoformat(timespec="seconds"), "message": message}
@@ -360,20 +367,31 @@ def _arp_ip_for_mac(mac):
 # so Linux needs -W. (Getting this wrong makes a /24 sweep hang on every dead IP.)
 _PING = ["ping", "-c1"] + (["-t", "1"] if platform.system() == "Darwin" else ["-W", "1"])
 
+def _net_tools_missing():
+    """Which discovery commands this machine hasn't got. Slim containers (python:*-slim) and
+    minimal distros ship neither; without them a MAC can't be mapped to an IP at all."""
+    return [t for t in ("ping", "arp") if not shutil.which(t)]
+
+APT_FOR = {"ping": "iputils-ping", "arp": "net-tools"}
+
 def _reachable(ip):
-    return subprocess.run(_PING + [ip], capture_output=True).returncode == 0
+    try:
+        return subprocess.run(_PING + [ip], capture_output=True).returncode == 0
+    except Exception:
+        return False                                 # no `ping` command — fall back to ARP
 
 def resolve_frame_ip(preferred, mac):
     # trust preferred only if it actually answers and maps to the MAC
     if preferred and _reachable(preferred):
         if _arp_ip_for_mac(mac) == preferred:
             return preferred
-    # otherwise sweep, then take a *reachable* ARP match
+    # otherwise sweep to populate the ARP table, then take a *reachable* ARP match
     base = ".".join((preferred or "192.168.1.1").split(".")[:3])
-    procs = [subprocess.Popen(_PING + [f"{base}.{i}"],
-             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for i in range(1, 255)]
-    for p in procs:
-        p.wait()
+    if shutil.which("ping"):
+        procs = [subprocess.Popen(_PING + [f"{base}.{i}"],
+                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for i in range(1, 255)]
+        for p in procs:
+            p.wait()
     ip = _arp_ip_for_mac(mac)
     return ip
 
@@ -1249,7 +1267,11 @@ def run(args):
 
     if load_config().get("pinned") and not args.force and not args.files:
         print("Kept — leaving the current art in place.")
-        write_status(True, "Kept — art left unchanged", LAST_PIECES[0] if LAST_PIECES else {})
+        # Nothing was prepped on this path, so LAST_PIECES is empty — carry the recorded piece
+        # forward instead, or the panel loses what it knows is on the TV (thumbnail details,
+        # Favourite, Drop-voice and Never-show-again all read this).
+        keep = {k: v for k, v in read_status().items() if k not in ("ok", "when", "message")}
+        write_status(True, "Kept — art left unchanged", keep)
         return
     if not args.mac:
         raise RuntimeError("No TV MAC set. Pass --mac AA:BB:CC:DD:EE:FF, or set FRAME_MAC in "
@@ -1257,6 +1279,12 @@ def run(args):
     print("Locating the Frame...")
     ip = resolve_frame_ip(args.ip, args.mac)
     if not ip:
+        missing = _net_tools_missing()
+        if missing:                          # no amount of waiting will conjure up the command
+            raise RuntimeError(
+                f"Can't locate the Frame: this machine has no {' or '.join(missing)} command, "
+                "which is how a MAC address is mapped to an IP. Install it (Debian/Ubuntu: "
+                f"sudo apt install {' '.join(APT_FOR[t] for t in missing)}).")
         return _maybe_watch(args, f"Frame (MAC {args.mac}) not found on the network.")
     print(f"Frame at {ip}")
 
