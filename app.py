@@ -543,6 +543,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    <option value="0.1">Fill the screen — only near-perfect fits (trim up to 10%)</option>
    <option value="0.2">Fill the screen — close enough (trim up to 20%)</option>
    <option value="0.3">Fill the screen — be generous (trim up to 30%)</option>
+   <option value="1">Fill the screen — always, cropping whatever it takes</option>
  </select>
  <p class="sub" id="fillhint" style="margin-top:8px"></p>
  <label class="chk" style="margin-top:14px"><input type="checkbox" id="placard">
@@ -691,7 +692,8 @@ const el = {content:$('content'), source:$('source'), all_types:$('all_types'), 
 function setSeg(val){document.querySelectorAll('#description button').forEach(b=>b.classList.toggle('on',b.dataset.v===val));
   el.tonerow.style.display = (val==='made-up') ? 'block' : 'none';}
 document.querySelectorAll('#description button').forEach(b=>b.onclick=()=>setSeg(b.dataset.v));
-function syncPlacard(){el.captionopts.style.display = el.placard.checked ? 'block' : 'none';}
+function syncPlacard(){el.captionopts.style.display = el.placard.checked ? 'block' : 'none';
+  if(typeof syncFill==='function') syncFill();}   // the label reintroduces a border in fill mode
 el.placard.onchange=syncPlacard;
 function syncTypes(){el.typegrid.classList.toggle('hidden', el.all_types.checked);}
 el.all_types.onchange=syncTypes;
@@ -745,13 +747,22 @@ function syncGoogly(){
 el.googly_strict.oninput=syncGoogly; syncGoogly();
 // screen fit: off, or a max-trim tolerance
 (()=>{const tol=cfg.fill_tolerance!=null?cfg.fill_tolerance:0.2;
-  el.fill.value=cfg.fill?['0.1','0.2','0.3'].reduce((a,b)=>Math.abs(b-tol)<Math.abs(a-tol)?b:a):'off';})();
-function syncFill(){const on=el.fill.value!=='off';
-  el.fillhint.textContent=on
-    ?'Skips anything that would need more trimming than that, so only wide, screen-shaped pieces get picked; edges are trimmed evenly. With the museum label on, the art fills the space beside the label instead. The mat colour only shows around the label.'
-    :'Every piece is shown whole, centred on a mat.';}
-el.fill.onchange=syncFill; syncFill();
+  el.fill.value=cfg.fill?['0.1','0.2','0.3','1'].reduce((a,b)=>Math.abs(b-tol)<Math.abs(a-tol)?b:a):'off';})();
+function syncFill(){const v=el.fill.value, on=v!=='off', always=(v==='1');
+  let t;
+  if(!on) t='Every piece is shown whole, centred on a mat.';
+  else if(always) t='Never skips a piece for its shape — edges are trimmed evenly until it fits. '
+    +'A portrait painting becomes a horizontal slice of itself (a tall 2:3 canvas loses about 62% '
+    +'of its area), so expect cropped-off heads on some pieces.';
+  else t='Skips anything that would need more trimming than that, so only wide, screen-shaped pieces '
+    +'get picked; edges are trimmed evenly.';
+  if(on&&el.placard.checked) t+=' The museum label is on, so the art fills only the space beside it '
+    +'and the mat colour still shows around the label — turn the label off for true edge to edge.';
+  if(on) t+=' Low-resolution scans are still skipped, however it is set, rather than being enlarged.';
+  el.fillhint.textContent=t;}
+el.fill.onchange=syncFill;
 syncPlacard();
+syncFill();
 const chosen=new Set(cfg.types||[]);
 document.querySelectorAll('.tcheck').forEach(c=>c.checked=chosen.has(c.dataset.type));
 syncTypes();

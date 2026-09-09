@@ -989,7 +989,8 @@ def fetch_matted(count, query, mat_rgb, theme=None, placard=False, all_types=Fal
     avoid = avoid or set()
     tw, th = fill_target(placard)
     if fill:
-        print(f"  fill: only art within {int(fill_tol*100)}% of {tw}x{th}")
+        print(f"  fill: {tw}x{th}, " + ("cropping anything to fit" if fill_tol >= 1.0
+              else f"only art that loses under {int(fill_tol*100)}%"))
     bias = bias_terms(subject, holidays, seasonal, hemisphere, weather, on_this_day, latitude, longitude)
     # Gather candidate object IDs, then pull each object's record and download its
     # public-domain image until we have enough.
@@ -1107,7 +1108,8 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
         q = random.choice(TERM_POOL)
     tw, th = fill_target(placard)
     if fill:
-        print(f"  fill: only art within {int(fill_tol*100)}% of {tw}x{th}")
+        print(f"  fill: {tw}x{th}, " + ("cropping anything to fit" if fill_tol >= 1.0
+              else f"only art that loses under {int(fill_tol*100)}%"))
     if q:
         params["q"] = q; print(f"  cleveland: {q}")
     else:
@@ -1524,7 +1526,8 @@ def main():
     ap.add_argument("--fill", action=argparse.BooleanOptionalAction, default=cfg.get("fill", False),
                     help="only pick art that (nearly) fills the screen, and show it edge to edge")
     ap.add_argument("--fill-tolerance", dest="fill_tolerance", type=float, default=cfg.get("fill_tolerance", 0.2),
-                    help="max share of a picture that may be cropped away to fill the screen (0.1 strict … 0.3 loose)")
+                    help="max share of a picture that may be cropped away to fill the screen "
+                         "(0.1 strict … 0.3 loose, 1.0 = crop anything rather than skip it)")
     ap.add_argument("--max-upscale", dest="max_upscale", type=float, default=cfg.get("max_upscale", 1.6),
                     help="skip images that would need enlarging more than this on screen (1.6 = a 2400px-wide scan is the smallest that fills a 4K screen)")
     ap.add_argument("--files", nargs="*")
@@ -1553,7 +1556,9 @@ def main():
             setattr(args, name + "_chance", 1.0 if b else 0.0)
         setattr(args, name + "_chance", min(1.0, max(0.0, getattr(args, name + "_chance") or 0.0)))
     args.googly_strict = min(1.0, max(0.0, args.googly_strict if args.googly_strict is not None else 0.5))
-    args.fill_tolerance = min(0.5, max(0.0, args.fill_tolerance if args.fill_tolerance is not None else 0.2))
+    # 1.0 means "crop whatever it takes": crop_loss is always < 1, so nothing is ever
+    # skipped for its shape. Anything lower skips art that would need more trimming.
+    args.fill_tolerance = min(1.0, max(0.0, args.fill_tolerance if args.fill_tolerance is not None else 0.2))
     args.max_upscale = max(1.0, args.max_upscale or 1.6)
     try:
         run(args)

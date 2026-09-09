@@ -378,6 +378,85 @@ class TestRender(unittest.TestCase):
                     self.assertLessEqual(len(fp._truncate_prose(text, limit=limit)), limit + 1)
 
 
+class TestFillTheScreen(unittest.TestCase):
+    """"Fill the screen, no borders" — the tolerance is what decides whether an
+    off-shape piece is cropped or skipped, and 1.0 means never skip for shape."""
+
+    def test_tolerance_of_one_never_skips_for_shape(self):
+        tw, th = fp.fill_target(False)
+        for size in ((3840, 2160), (4000, 3000), (3000, 3000), (2000, 3000), (1000, 4000)):
+            with self.subTest(size=size):
+                self.assertLess(fp.crop_loss(*size, tw, th), 1.0,
+                                "crop_loss must stay under 1.0 or a 1.0 tolerance would skip")
+
+    def test_a_lower_tolerance_still_skips_off_shape_art(self):
+        tw, th = fp.fill_target(False)
+        self.assertGreater(fp.crop_loss(2000, 3000, tw, th), 0.3)   # portrait, skipped at 0.3
+        self.assertLess(fp.crop_loss(3000, 2000, tw, th), 0.3)      # 3:2 landscape, kept
+
+    def test_the_clamp_allows_one(self):
+        """The old clamp was 0.5, so "crop whatever it takes" was unreachable."""
+        import subprocess, sys
+        captured = {}
+        real_run, real_argv = fp.run, sys.argv
+        fp.run = lambda a: captured.update(fill=a.fill, tol=a.fill_tolerance)
+        sys.argv = ["frame_push.py", "--fill", "--fill-tolerance", "1.0",
+                    "--mac", "a0:d0:5b:01:23:56"]
+        try:
+            fp.main()
+        finally:
+            fp.run, sys.argv = real_run, real_argv
+        self.assertEqual(captured, {"fill": True, "tol": 1.0})
+
+    def test_out_of_range_tolerances_are_still_clamped(self):
+        import sys
+        for given, want in (("5", 1.0), ("-1", 0.0)):
+            captured = {}
+            real_run, real_argv = fp.run, sys.argv
+            fp.run = lambda a: captured.update(tol=a.fill_tolerance)
+            sys.argv = ["frame_push.py", "--fill-tolerance", given, "--mac", "a0:d0:5b:01:23:56"]
+            try:
+                fp.main()
+            finally:
+                fp.run, sys.argv = real_run, real_argv
+            with self.subTest(given=given):
+                self.assertEqual(captured["tol"], want)
+
+    def test_fill_renders_edge_to_edge_with_no_mat(self):
+        """The actual "no borders" requirement: not one pixel of mat colour."""
+        mat = fp.MAT_COLORS["charcoal"]
+        for size in ((2000, 3000), (4000, 3000), (3000, 3000)):
+            with self.subTest(size=size):
+                out = fp.mat_image(Image.new("RGB", size, (200, 60, 40)), mat, fill=True)
+                self.assertEqual(out.size, fp.CANVAS)
+                self.assertNotIn(mat, set(out.getdata()), "mat colour is visible in fill mode")
+
+    def test_the_museum_label_reintroduces_a_border(self):
+        """Why the panel hint has to mention it: fill + placard is not edge to edge."""
+        mat = fp.MAT_COLORS["charcoal"]
+        out = fp.mat_with_placard(Image.new("RGB", (2000, 3000), (200, 60, 40)),
+                                  {"title": "t"}, mat, None, None, True)
+        self.assertEqual(out.getpixel((5, 5)), mat)
+
+    def test_the_resolution_guard_still_applies_in_fill_mode(self):
+        """Independent of shape: fill scales by the tighter axis, so a narrow scan is
+        skipped however loose the tolerance. The hint says so."""
+        self.assertFalse(fp.too_small(2400, 1350, False, True, 1.6))
+        self.assertTrue(fp.too_small(2000, 3000, False, True, 1.6))
+        self.assertTrue(fp.too_small(1600, 2400, False, True, 1.6))
+
+    def test_the_panel_offers_and_round_trips_the_always_option(self):
+        page_has = '<option value="1">' in app.PAGE
+        self.assertTrue(page_has, "the Screen fit dropdown has no always-fill option")
+        self.assertIn("'0.1','0.2','0.3','1'", app.PAGE,
+                      "hydration would snap a saved 1.0 back to 0.3")
+        flags = app.flags_from(dict(fp.DEFAULTS, fill=True, fill_tolerance=1.0, placard=False,
+                                    mac="a0:d0:5b:01:23:56"))
+        self.assertIn("--fill", flags)
+        self.assertIn("--no-placard", flags)
+        self.assertEqual(flags[flags.index("--fill-tolerance") + 1], "1.0")
+
+
 # ------------------------------------------------------------------------------ state
 class TestStatusRoundTrip(TempState):
     """Bug: the pinned early return overwrote status.json with nothing, taking the
