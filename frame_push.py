@@ -436,11 +436,14 @@ def wake(mac):
             pass
 
 def ensure_art_ready(art, mac, wait, retries):
-    """WoL, wait, then probe the art channel. Raises if it never answers."""
+    """WoL (only if mac is given), wait, then probe the art channel. Raises if it never answers.
+    WoL is opt-in: a magic packet powers a switched-off Frame up into live TV, not art mode."""
     last = None
     for i in range(1, retries + 1):
-        wake(mac)
-        time.sleep(wait)
+        if mac:
+            wake(mac)
+        if mac or i > 1:
+            time.sleep(wait)
         for probe in ("get_artmode", "get_current", "available"):
             fn = getattr(art, probe, None)
             if fn:
@@ -667,7 +670,7 @@ def do_wipe(args):
     art = open_art(args, ip)
     if not args.no_wake:
         print("Waking the Frame and waiting for the art channel...")
-        ensure_art_ready(art, args.mac, args.wake_wait, args.retries)
+        ensure_art_ready(art, args.mac if args.wol else None, args.wake_wait, args.retries)
         print("Art channel is up.")
 
     ids = user_upload_ids(art)
@@ -1462,7 +1465,7 @@ def run(args):
     if not args.no_wake:
         print("Waking the Frame and waiting for the art channel...")
         try:
-            ensure_art_ready(art, args.mac, args.wake_wait, args.retries)
+            ensure_art_ready(art, args.mac if args.wol else None, args.wake_wait, args.retries)
         except RuntimeError as e:
             return _maybe_watch(args, str(e))
         print("Art channel is up.")
@@ -1653,7 +1656,10 @@ def main():
     ap.add_argument("--timeout", type=int, default=30, help="socket timeout (s) so it never hangs")
     ap.add_argument("--wake-wait", type=int, default=12, help="seconds to wait after WoL before probing")
     ap.add_argument("--retries", type=int, default=4, help="wake+probe attempts (the watcher is more patient still)")
-    ap.add_argument("--no-wake", action="store_true", help="skip the WoL/wake step")
+    ap.add_argument("--no-wake", action="store_true", help="skip the wake/art-channel readiness step")
+    ap.add_argument("--wol", action=argparse.BooleanOptionalAction, default=cfg.get("wake_on_lan", False),
+                    help="send Wake-on-LAN when the TV doesn't answer (off by default: it powers a "
+                         "switched-off Frame up into live TV)")
     ap.add_argument("--upload-retries", type=int, default=3, help="retries per image on transient errors")
     ap.add_argument("--wipe", action="store_true",
                     help="DELETE every uploaded image from the TV and exit. Irreversible. "
