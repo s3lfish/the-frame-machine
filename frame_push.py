@@ -660,6 +660,28 @@ def wipe_uploads(art, batch=20):
     left = set(user_upload_ids(art))
     return attempted, [cid for cid in attempted if cid not in left]
 
+def prune_uploads(art, keep, batch=20):
+    """After a replace push: delete every uploaded image except `keep`, then re-read the TV's
+    list to report what really went. Pruning against the TV's own list (not the one id saved
+    in uploaded.json) is what stops strays piling up: panel pushes, history browsing and
+    half-finished runs each overwrote that id, so 450+ old pieces built up in the rotation."""
+    try:
+        old = [cid for cid in user_upload_ids(art) if cid not in set(keep)]
+        for i in range(0, len(old), batch):
+            chunk = old[i:i + batch]
+            try:
+                art.delete_list(chunk)
+            except Exception:
+                for cid in chunk:
+                    try: art.delete(cid)
+                    except Exception: pass
+        if old:
+            stuck = [cid for cid in user_upload_ids(art) if cid in set(old)]
+            print(f"Removed {len(old) - len(stuck)} older upload(s)"
+                  + (f"; {len(stuck)} wouldn't delete, will retry next run" if stuck else ""))
+    except Exception as e:
+        print(f"  ! prune skipped: {str(e)[:120]}", file=sys.stderr)
+
 def do_wipe(args):
     """--wipe: remove every uploaded image from the TV. Irreversible."""
     ip = locate_frame(args)
@@ -1481,20 +1503,6 @@ def run(args):
     if not paths:
         raise RuntimeError("No images to upload.")
 
-    if args.replace and os.path.exists(STATE):
-        try:
-            old = json.load(open(STATE))
-            if old:
-                try:
-                    art.delete_list(old)
-                except Exception:
-                    for cid in old:
-                        try: art.delete(cid)
-                        except Exception: pass
-                print(f"Removed {len(old)} from the previous batch")
-        except Exception as e:
-            print(f"  ! prune skipped: {e}", file=sys.stderr)
-
     def fresh_art():
         return SamsungTVWS(host=ip, port=8002, token_file=args.token_file, timeout=args.timeout).art()
 
@@ -1524,6 +1532,9 @@ def run(args):
     if ids and not args.no_select:
         art.select_image(ids[0], show=True)
         print(f"Displaying {ids[0]}")
+
+    if args.replace:
+        prune_uploads(art, keep=ids)
 
     if args.slideshow is not None:
         ok = False

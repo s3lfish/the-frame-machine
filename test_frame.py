@@ -821,6 +821,27 @@ class TestWipeUploads(unittest.TestCase):
         self.assertEqual(sorted(deleted), ["MY_F0001", "MY_F0003"])
         self.assertIn("MY_F0002", [i["content_id"] for i in art.items])
 
+
+class TestPruneUploads(unittest.TestCase):
+    """A replace push prunes against the TV's own list, not the one id in uploaded.json:
+    trusting that file let 450+ strays pile up in the Frame's rotation (2026-10)."""
+
+    def test_every_older_upload_goes_except_the_new_one_and_samsung_art(self):
+        art = FakeArt(["MY_F0001", "MY_F0002", "MY_F0003", "SAM-S0011"])
+        fp.prune_uploads(art, keep=["MY_F0003"])
+        self.assertEqual(sorted(i["content_id"] for i in art.items), ["MY_F0003", "SAM-S0011"])
+
+    def test_one_undeletable_stray_does_not_stop_the_rest(self):
+        art = FakeArt(["MY_F0001", "MY_F0002", "MY_F0009"], refuse=["MY_F0001"], batch_raises=True)
+        fp.prune_uploads(art, keep=["MY_F0009"])
+        self.assertEqual(sorted(i["content_id"] for i in art.items), ["MY_F0001", "MY_F0009"])
+
+    def test_an_unreadable_list_skips_the_prune_instead_of_failing_the_push(self):
+        class Broken:
+            def available(self, category=None):
+                raise RuntimeError("websocket closed")
+        fp.prune_uploads(Broken(), keep=["MY_F0009"])           # must not raise
+
     def test_large_collections_are_deleted_in_batches(self):
         art = FakeArt([f"MY_F{n:04d}" for n in range(45)])
         fp.wipe_uploads(art, batch=20)
