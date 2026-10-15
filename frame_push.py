@@ -660,13 +660,22 @@ def wipe_uploads(art, batch=20):
     left = set(user_upload_ids(art))
     return attempted, [cid for cid in attempted if cid not in left]
 
-def prune_uploads(art, keep, batch=20):
-    """After a replace push: delete every uploaded image except `keep`, then re-read the TV's
-    list to report what really went. Pruning against the TV's own list (not the one id saved
+def _upload_no(cid):
+    """MY_F2598 -> 2598: the TV numbers uploads in order, so this sorts them newest-last."""
+    m = re.search(r"(\d+)$", cid)
+    return int(m.group(1)) if m else -1
+
+def prune_uploads(art, keep, recent=1, batch=20):
+    """After a replace push: delete every uploaded image except `keep` and the newest others
+    up to `recent` in all (so the TV's own slideshow has a few to cycle through if this
+    script, the Mac or the internet goes down), then re-read the TV's list to report what
+    really went. Pruning against the TV's own list (not the one id saved
     in uploaded.json) is what stops strays piling up: panel pushes, history browsing and
     half-finished runs each overwrote that id, so 450+ old pieces built up in the rotation."""
     try:
-        old = [cid for cid in user_upload_ids(art) if cid not in set(keep)]
+        spare = max(0, recent - len(set(keep)))
+        older = sorted((c for c in user_upload_ids(art) if c not in set(keep)), key=_upload_no, reverse=True)
+        old = older[spare:]
         for i in range(0, len(old), batch):
             chunk = old[i:i + batch]
             try:
@@ -681,6 +690,23 @@ def prune_uploads(art, keep, batch=20):
                   + (f"; {len(stuck)} wouldn't delete, will retry next run" if stuck else ""))
     except Exception as e:
         print(f"  ! prune skipped: {str(e)[:120]}", file=sys.stderr)
+
+def ensure_slideshow(art, minutes):
+    """Keep the TV's own shuffled slideshow over My Photos at `minutes` (0 = off). It runs on
+    the TV itself, so the kept pieces keep changing when nothing else is working. Only set
+    when it differs, so a push doesn't restart the TV's timer. (No auto-rotation fallback:
+    that call hangs on the QA43LS03B.)"""
+    want = str(minutes) if minutes and minutes > 0 else "off"
+    try:
+        cur = art.get_slideshow_status() or {}
+        if str(cur.get("value")) == want and (want == "off" or cur.get("category_id") == "MY-C0002"):
+            return True
+        art.set_slideshow_status(duration=max(0, minutes or 0), type=True, category=2)
+        print("Slideshow " + (f"every {minutes} min over the kept pieces" if want != "off" else "off"))
+        return True
+    except Exception as e:
+        print(f"  ! slideshow not set: {str(e)[:100]}", file=sys.stderr)
+        return False
 
 def do_wipe(args):
     """--wipe: remove every uploaded image from the TV. Irreversible."""
@@ -1574,16 +1600,10 @@ def run(args):
         print(f"Displaying {ids[0]}")
 
     if args.replace:
-        prune_uploads(art, keep=ids)
+        prune_uploads(art, keep=ids, recent=args.keep)
 
     if args.slideshow is not None:
-        ok = False
-        for fn in ("set_slideshow_status", "set_auto_rotation_status"):
-            try:
-                getattr(art, fn)(duration=args.slideshow, type=True, category=2); ok = True; break
-            except Exception:
-                continue
-        print("Slideshow " + (f"on, {args.slideshow}-min interval" if ok else "toggle failed — set in TV menu"))
+        ensure_slideshow(art, args.slideshow)
 
     with open(HEARTBEAT, "w") as f:
         f.write(f"{datetime.datetime.now().isoformat(timespec='seconds')}  ip={ip}  uploaded={len(ids)}  replace={args.replace}\n")
@@ -1705,7 +1725,10 @@ def main():
                     help="skip images that would need enlarging more than this on screen (1.6 = a 2400px-wide scan is the smallest that fills a 4K screen)")
     ap.add_argument("--files", nargs="*")
     ap.add_argument("--no-select", action="store_true")
-    ap.add_argument("--slideshow", type=int, default=None)
+    ap.add_argument("--slideshow", type=int, default=cfg.get("slideshow"),
+                    help="minutes between pieces in the TV's own slideshow over the kept uploads (0 = off)")
+    ap.add_argument("--keep", type=int, default=cfg.get("keep", 1),
+                    help="how many of the newest uploads stay on the TV after a push (for its slideshow)")
     ap.add_argument("--replace", action=argparse.BooleanOptionalAction, default=cfg["replace"])
     ap.add_argument("--timeout", type=int, default=30, help="socket timeout (s) so it never hangs")
     ap.add_argument("--wake-wait", type=int, default=12, help="seconds to wait after WoL before probing")
@@ -1740,6 +1763,7 @@ def main():
     # 1.0 means "crop whatever it takes": crop_loss is always < 1, so nothing is ever
     # skipped for its shape. Anything lower skips art that would need more trimming.
     args.fill_tolerance = min(1.0, max(0.0, args.fill_tolerance if args.fill_tolerance is not None else 0.2))
+    args.keep = max(1, args.keep or 1)
     args.max_upscale = max(1.0, args.max_upscale or 1.6)
     try:
         run(args)

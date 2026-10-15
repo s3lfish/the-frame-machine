@@ -878,6 +878,55 @@ class TestPruneUploads(unittest.TestCase):
                 raise RuntimeError("websocket closed")
         fp.prune_uploads(Broken(), keep=["MY_F0009"])           # must not raise
 
+    def test_recent_keeps_the_newest_few_for_the_tvs_own_slideshow(self):
+        """Numbered, not listed, order decides 'newest': MY_F0100 is newer than MY_F0099."""
+        art = FakeArt(["MY_F0100", "MY_F0007", "MY_F0099", "MY_F0098", "MY_F0097", "MY_F0096",
+                       "SAM-S0011", "MY_F0101"])
+        fp.prune_uploads(art, keep=["MY_F0101"], recent=5)
+        self.assertEqual(sorted(i["content_id"] for i in art.items),
+                         ["MY_F0097", "MY_F0098", "MY_F0099", "MY_F0100", "MY_F0101", "SAM-S0011"])
+
+    def test_recent_never_drops_the_piece_just_uploaded(self):
+        art = FakeArt(["MY_F0500", "MY_F0003"])                 # an oddly low new id
+        fp.prune_uploads(art, keep=["MY_F0003"], recent=1)
+        self.assertEqual([i["content_id"] for i in art.items], ["MY_F0003"])
+
+
+class FakeSlideshow:
+    def __init__(self, value="off", category_id=""):
+        self.status = {"value": value, "category_id": category_id}
+        self.sets = []
+
+    def get_slideshow_status(self):
+        return dict(self.status)
+
+    def set_slideshow_status(self, duration=0, type=True, category=2):
+        self.sets.append(duration)
+        self.status = {"value": str(duration) if duration else "off", "category_id": f"MY-C000{category}"}
+
+
+class TestEnsureSlideshow(unittest.TestCase):
+    def test_turns_it_on_over_my_photos(self):
+        art = FakeSlideshow()
+        self.assertTrue(fp.ensure_slideshow(art, 60))
+        self.assertEqual(art.status, {"value": "60", "category_id": "MY-C0002"})
+
+    def test_leaves_it_alone_when_already_right_so_the_timer_isnt_reset(self):
+        art = FakeSlideshow("60", "MY-C0002")
+        fp.ensure_slideshow(art, 60)
+        self.assertEqual(art.sets, [])
+
+    def test_zero_turns_it_off(self):
+        art = FakeSlideshow("60", "MY-C0002")
+        fp.ensure_slideshow(art, 0)
+        self.assertEqual(art.status["value"], "off")
+
+    def test_a_tv_that_refuses_does_not_fail_the_push(self):
+        class Refuses(FakeSlideshow):
+            def set_slideshow_status(self, **kw):
+                raise RuntimeError("timed out")
+        self.assertFalse(fp.ensure_slideshow(Refuses(), 60))
+
     def test_large_collections_are_deleted_in_batches(self):
         art = FakeArt([f"MY_F{n:04d}" for n in range(45)])
         fp.wipe_uploads(art, batch=20)
