@@ -332,6 +332,42 @@ class TestGeometry(unittest.TestCase):
                 out = fp.cover_crop(Image.new("RGB", size), 3840, 2160)
                 self.assertEqual(out.size, (3840, 2160))
 
+    def test_smart_fill_crops_near_fits_and_mats_the_rest(self):
+        self.assertTrue(fp.fills_screen(4000, 2400, 3840, 2160, True, 0.15))    # 1.67:1, ~6% trimmed
+        self.assertFalse(fp.fills_screen(4000, 3000, 3840, 2160, True, 0.15))   # 4:3 loses 25%
+        self.assertFalse(fp.fills_screen(2000, 3000, 3840, 2160, True, 0.15))   # a portrait
+        self.assertTrue(fp.fills_screen(2000, 3000, 3840, 2160, True, 1.0))     # "always" still crops
+        self.assertFalse(fp.fills_screen(4000, 2400, 3840, 2160, False, 1.0))   # fill off
+
+    @staticmethod
+    def _with_detail(size, box):
+        """A flat grey picture with a busy checkerboard 'subject' inside `box`."""
+        im = Image.new("RGB", size, (120, 120, 120))
+        x0, y0, x1, y1 = box
+        for x in range(x0, x1, 8):
+            for y in range(y0, y1, 8):
+                if (x // 8 + y // 8) % 2:
+                    im.paste((250, 250, 250), (x, y, x + 8, y + 8))
+        return im
+
+    def test_the_crop_keeps_an_off_centre_subject_in_a_portrait(self):
+        art = self._with_detail((1200, 1800), (200, 150, 1000, 650))     # a head near the top
+        keep = round(1200 / (3840 / 2160))                               # 675 px of 1800
+        y0 = fp.crop_start(art, keep, horizontal=False)
+        self.assertLessEqual(y0, 150)                                    # whole subject in shot
+        self.assertGreaterEqual(y0 + keep, 650)
+
+    def test_the_crop_follows_the_subject_sideways_too(self):
+        art = self._with_detail((3000, 1000), (2300, 200, 2900, 800))    # subject at the right
+        keep = round(1000 * 3840 / 2160)
+        x0 = fp.crop_start(art, keep, horizontal=True)
+        self.assertGreaterEqual(x0 + keep, 2900)
+
+    def test_a_featureless_picture_is_cropped_from_the_centre(self):
+        art = Image.new("RGB", (1200, 1800), (90, 90, 90))
+        keep = 675
+        self.assertAlmostEqual(fp.crop_start(art, keep, horizontal=False), (1800 - keep) / 2, delta=10)
+
 
 # -------------------------------------------------------------------------- rendering
 class TestPrepLocal(TempState):

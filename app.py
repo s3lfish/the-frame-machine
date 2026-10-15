@@ -126,6 +126,7 @@ def flags_from(cfg):
     f += ["--placard"] if cfg.get("placard", True) else ["--no-placard"]
     f += ["--fill"] if cfg.get("fill") else ["--no-fill"]
     f += ["--fill-tolerance", str(cfg.get("fill_tolerance", 0.2))]
+    f += ["--fill-mat"] if cfg.get("fill_mat") else ["--no-fill-mat"]
     f += ["--qr"] if cfg.get("qr", True) else ["--no-qr"]
     f += ["--replace"] if cfg.get("replace", True) else ["--no-replace"]
     # per-run "chance" modes — fall back to the legacy on/off bool if no chance is stored yet
@@ -579,6 +580,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  <label class="f">Screen fit <span class="sub">— how the art sits on the screen</span></label>
  <select id="fill">
    <option value="off">Any shape — matted to fit</option>
+   <option value="smart">Smart — fill the screen when it fits (trim up to 15%), otherwise matted</option>
    <option value="0.1">Fill the screen — only near-perfect fits (trim up to 10%)</option>
    <option value="0.2">Fill the screen — close enough (trim up to 20%)</option>
    <option value="0.3">Fill the screen — be generous (trim up to 30%)</option>
@@ -790,15 +792,18 @@ function syncGoogly(){
 el.googly_strict.oninput=syncGoogly; syncGoogly();
 // screen fit: off, or a max-trim tolerance
 (()=>{const tol=cfg.fill_tolerance!=null?cfg.fill_tolerance:0.2;
-  el.fill.value=cfg.fill?['0.1','0.2','0.3','1'].reduce((a,b)=>Math.abs(b-tol)<Math.abs(a-tol)?b:a):'off';})();
+  el.fill.value=!cfg.fill?'off':cfg.fill_mat?'smart':['0.1','0.2','0.3','1'].reduce((a,b)=>Math.abs(b-tol)<Math.abs(a-tol)?b:a);})();
 function syncFill(){const v=el.fill.value, on=v!=='off', always=(v==='1');
   let t;
   if(!on) t='Every piece is shown whole, centred on a mat.';
-  else if(always) t='Never skips a piece for its shape — edges are trimmed evenly until it fits. '
+  else if(v==='smart') t='Screen-shaped pieces fill the screen edge to edge, trimmed where they have '
+    +'the least detail; anything else (portraits, tall scrolls, odd shapes) is shown whole on the mat '
+    +'like a framed print. Nothing is skipped for its shape.';
+  else if(always) t='Never skips a piece for its shape — edges are trimmed (keeping the most detailed part) until it fits. '
     +'A portrait painting becomes a horizontal slice of itself (a tall 2:3 canvas loses about 62% '
     +'of its area), so expect cropped-off heads on some pieces.';
   else t='Skips anything that would need more trimming than that, so only wide, screen-shaped pieces '
-    +'get picked; edges are trimmed evenly.';
+    +'get picked; the trim keeps the most detailed part.';
   if(on&&el.placard.checked) t+=' The museum label is on, so the art fills only the space beside it '
     +'and the mat colour still shows around the label — turn the label off for true edge to edge.';
   if(on) t+=' Low-resolution scans are still skipped, however it is set, rather than being enlarged.';
@@ -825,7 +830,8 @@ function collect(){return {description:document.querySelector('#description butt
   hemisphere:el.hemisphere.value, watch_on_fail:el.watch_on_fail.checked,
   ntfy_topic:el.ntfy_topic.value.trim(), password:el.password.value,
   every:Math.max(1,parseInt(el.every.value)||1), every_unit:el.every_unit.value, time:el.time.value, mat:el.mat.value,
-  fill:el.fill.value!=='off', fill_tolerance:el.fill.value==='off'?(cfg.fill_tolerance!=null?cfg.fill_tolerance:0.2):parseFloat(el.fill.value),
+  fill:el.fill.value!=='off', fill_mat:el.fill.value==='smart',
+  fill_tolerance:el.fill.value==='off'?(cfg.fill_tolerance!=null?cfg.fill_tolerance:0.2):el.fill.value==='smart'?0.15:parseFloat(el.fill.value),
   mac:el.mac.value.trim(), replace:true};}
 async function readJson(r){try{return await r.json();}
   catch(e){return {ok:false,message:'The panel returned an error ('+r.status+') — check its log.'};}}
