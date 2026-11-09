@@ -144,6 +144,9 @@ def flags_from(cfg):
         f += ["--latitude", str(cfg["latitude"]), "--longitude", str(cfg["longitude"])]
     if (cfg.get("subject") or "").strip():
         f += ["--subject", cfg["subject"].strip()]
+    excl = cfg.get("exclude_terms")
+    if isinstance(excl, list):                 # always sent, so an emptied list means "none"
+        f += ["--exclude", ",".join(str(x).replace(",", " ").strip() for x in excl if str(x).strip())]
     f += ["--fetch", str(cfg.get("fetch", 1))]
     if cfg.get("mac"):
         f += ["--mac", cfg["mac"]]
@@ -634,11 +637,14 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
      <option value="any">Either museum</option>
    </optgroup>
    <option value="everything">Everything — museums and modern, a random pick each time</option>
+   <option value="favourites">Favourites only — just the pieces you've ♥'d, in turn</option>
  </select>
  <div id="unsplashrow" style="margin-top:12px">
    <label class="f" style="font-weight:400">Unsplash access key <span class="sub" id="unsplashstate">— {{ 'saved ✓ (type a new one to replace it)' if has_unsplash else 'not set: Unsplash is skipped in the mixes until you add one' }}</span></label>
    <input type="password" id="unsplash_key" placeholder="free from unsplash.com/developers → New Application → Access Key" autocomplete="off" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px">
  </div>
+ <label class="f" style="margin-top:16px">Leave out pictures of… <span class="sub">— modern sources only; comma-separated</span></label>
+ <input type="text" id="exclude_terms" placeholder="church, temple, protest… — leave blank to allow anything" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px">
  <label class="f" style="margin-top:16px">Museum content <span class="sub">— genre, when a museum is the source</span></label>
  <select id="content">
    <option value="museum">Whole museum — a random surprise</option>
@@ -651,7 +657,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  </select>
  <label class="f" style="margin-top:16px">Only show art of… <span class="sub">— optional; combines with season/holidays (e.g. cats at Christmas → Christmas cats)</span></label>
  <input type="text" id="subject" placeholder="cats, dogs, dragons… — leave blank for none" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px">
- <label class="f" style="margin-top:16px">How often to spice things up <span class="sub">— each rolls its own dice per change</span></label>
+ <label class="f" style="margin-top:16px">How often to spice things up <span class="sub">— museum sources only; each rolls its own dice per change</span></label>
  <div class="voicerow chancerow" id="seasonal" data-w="0">
    <span class="vname">Match the season <span class="sub">— snow, blossom, harvest…</span></span>
    <div class="lvl"><button data-w="0">Never</button><button data-w="0.2">Rarely</button><button data-w="0.5">Sometimes</button><button data-w="1">Always</button></div>
@@ -786,6 +792,7 @@ el.time.value=cfg.time; el.mat.value=cfg.mat; el.mac.value=cfg.mac||''; el.qr.ch
 el.time.oninput=syncSched; syncSched();
 el.source.value=cfg.source||'modern'; el.ntfy_topic.value=cfg.ntfy_topic||'';
 el.hemisphere.value=cfg.hemisphere||'north'; el.subject.value=cfg.subject||'';
+$('exclude_terms').value=(Array.isArray(cfg.exclude_terms)?cfg.exclude_terms:[]).join(', ');
 el.watch_on_fail.checked=cfg.watch_on_fail!==false;
 el.latitude.value=(cfg.latitude!=null?cfg.latitude:''); el.longitude.value=(cfg.longitude!=null?cfg.longitude:'');
 el.placard.checked=cfg.placard!==false;
@@ -847,6 +854,7 @@ function collect(){return {description:document.querySelector('#description butt
   tone:[...document.querySelectorAll('#tonegrid .voicerow')].filter(r=>parseFloat(r.dataset.w)>0).map(r=>r.dataset.tone),
   tone_weights:Object.fromEntries([...document.querySelectorAll('#tonegrid .voicerow')].filter(r=>parseFloat(r.dataset.w)>0).map(r=>[r.dataset.tone,parseFloat(r.dataset.w)])),
   subject:el.subject.value.trim(),
+  exclude_terms:$('exclude_terms').value.split(',').map(x=>x.trim()).filter(Boolean),
   seasonal_chance:parseFloat(el.seasonal.dataset.w||'0'), holidays_chance:parseFloat(el.holidays.dataset.w||'0'),
   weather_chance:parseFloat(el.weather.dataset.w||'0'), on_this_day_chance:parseFloat(el.on_this_day.dataset.w||'0'),
   googly_chance:parseFloat(el.googly.dataset.w||'0'),
