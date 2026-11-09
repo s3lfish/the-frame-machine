@@ -587,6 +587,14 @@ class TestFullscreenLayout(TempState):
         self._write({"source": "nasa"})
         self.assertEqual(fp.load_config()["source"], "nasa")
 
+    def test_a_hand_edited_version_still_migrates_instead_of_failing(self):
+        """A raise here would leave load_config on bare DEFAULTS, and the next panel save
+        would then overwrite the real config (password included)."""
+        self._write({"layout_version": "abc", "password": "pw", "placard": True})
+        cfg = fp.load_config()
+        self.assertEqual(cfg["password"], "pw")
+        self.assertFalse(cfg["placard"])
+
     def test_the_defaults_are_fullscreen(self):
         self.assertFalse(fp.DEFAULTS["placard"])
         self.assertTrue(fp.DEFAULTS["fill"] and fp.DEFAULTS["fill_mat"])
@@ -793,6 +801,17 @@ class TestUnsplashCandidates(TempState):
             self.assertEqual(c["meta"]["title"], "a foggy forest")
             c["on_use"]()
         self.assertEqual(calls[-1][0], "https://api.unsplash.com/photos/abc/download")
+
+    def test_the_key_is_never_sent_to_another_host(self):
+        os.environ["UNSPLASH_ACCESS_KEY"] = "KEY"
+        photo = dict(self.PHOTO, links={"html": "h", "download_location": "https://evil.example/x"})
+        calls = []
+        def fake(url, params=None, headers=None, tries=4, timeout=30):
+            calls.append(url)
+            return self.R([photo])
+        with Patch(fp, http_get=fake):
+            fp.unsplash_candidates("fog")[0]["on_use"]()
+        self.assertEqual(calls, [fp.UNSPLASH_API])
 
     def test_a_rejected_key_gives_no_candidates(self):
         os.environ["UNSPLASH_ACCESS_KEY"] = "BAD"

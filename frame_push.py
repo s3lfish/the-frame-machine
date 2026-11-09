@@ -281,7 +281,13 @@ def _save_list(path, data):
 
 def migrate_config(saved):
     """Bring a saved config.json dict up to LAYOUT_VERSION in place. True if it changed."""
-    if (saved.get("layout_version") or 1) >= LAYOUT_VERSION:
+    if not isinstance(saved, dict):
+        return False
+    try:                                          # a hand-edited value must not break loading
+        version = int(saved.get("layout_version") or 1)
+    except (TypeError, ValueError):
+        version = 1
+    if version >= LAYOUT_VERSION:
         return False
     saved.update(FULLSCREEN_LAYOUT)
     if saved.get("source") in (None, "met", "cleveland", "any"):
@@ -1632,7 +1638,9 @@ def unsplash_candidates(term):
         raw = (ph.get("urls") or {}).get("raw")
         if not raw:
             continue
-        ping = (ph.get("links") or {}).get("download_location")
+        ping = (ph.get("links") or {}).get("download_location") or ""
+        if not ping.startswith("https://api.unsplash.com/"):   # the key only goes to Unsplash
+            ping = ""
         user = (ph.get("user") or {}).get("name") or "Unsplash"
         out.append({"id": f"us:{ph.get('id')}",
                     "img_url": raw + ("&" if "?" in raw else "?") + f"w={CANVAS[0]}&fm=jpg&q=88",
