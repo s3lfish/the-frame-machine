@@ -53,6 +53,11 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   Wikimedia searches stick to scenery and leave out scanned paintings. (2026-11-09)
 
 ### Fixed
+- **A banned piece really leaves the TV.** *Never show again* only blocklisted the piece,
+  so its upload stayed among the newest pieces the TV's own slideshow cycles and kept
+  coming back. A ban now also deletes that upload from the TV (straight away, or the next
+  time the TV answers if it's asleep) and drops the piece from Back/Forward and your
+  favourites. Pieces banned before this update are cleaned up the same way. (2026-11-09)
 - **Re-running the installer keeps the panel's port.** `install.sh` always wrote port
   8080 into the panel's launchd/systemd service, so a re-run could move a panel that had
   been set to another port onto one something else already uses. It now keeps the port
