@@ -167,7 +167,9 @@ Restart=always
 WantedBy=default.target
 EOF
   systemctl --user daemon-reload
-  systemctl --user enable --now frameart-gui.service
+  systemctl --user enable frameart-gui.service
+  # restart, not just start: on a re-run (an update) the old panel would keep running old code
+  systemctl --user restart frameart-gui.service
   echo "  ✓ Control panel installed as a systemd --user service"
   HOST="$(hostname -s)"
 else
