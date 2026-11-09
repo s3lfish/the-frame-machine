@@ -1482,9 +1482,24 @@ NASA_TERMS = ["nebula", "galaxy", "Hubble", "Webb NIRCam", "aurora", "star clust
 # NASA's library is half press photos: launches, briefings, people in clean rooms. Those come
 # from these centres; the science imagery comes from JPL, Goddard, STScI and the station (JSC).
 NASA_SKIP_CENTRES = {"KSC", "HQ", "MSFC", "ARC", "AFRC", "GRC", "LARC", "SSC"}
-# Charts and labelled comparisons look like a slide on the wall, not a picture.
-NASA_SKIP_TITLE = re.compile(r"\b(illustration|infographic|diagram|chart|graph|map|poster|"
-                             r"comparison|timeline|labell?ed|annotated)s?\b", re.I)
+# Charts, cutaways and labelled illustrations look like a slide on the wall, not a picture;
+# JPL's spacecraft-in-the-clean-room shots slip past NASA_SKIP_CENTRES. The title list is
+# broad; the description (its opening, where NASA says "This graphic shows…" or "Engineers
+# work on…") gets only the words that never describe a picture for the wall.
+_NASA_GRAPHIC = (r"illustration|infographic|graphic|diagram|chart|graph|cutaway|schematic|"
+                 r"artist'?s? concept(ion)?")
+NASA_SKIP_TITLE = re.compile(rf"\b({_NASA_GRAPHIC}|map|poster|comparison|timeline|labell?ed|annotated)s?\b", re.I)
+NASA_SKIP_DESC = re.compile(rf"\b({_NASA_GRAPHIC}|labell?ed|annotated|engineers?|technicians?|"
+                            r"clean ?room|assembly facility)s?\b", re.I)
+NASA_DESC_CHARS = 300
+# NASA ranks by relevance: the first few pages of "Jupiter" are Juno and Voyager science
+# images, page 20 is wind-tunnel models and team meetings. Stay near the top.
+NASA_MAX_PAGE = 5
+
+def nasa_is_graphic(title, description):
+    """True for a NASA hit that is a chart, diagram or illustration rather than an image."""
+    return bool(NASA_SKIP_TITLE.search(title or "")
+                or NASA_SKIP_DESC.search(_strip_html(description)[:NASA_DESC_CHARS]))
 MAX_FAILED_DOWNLOADS = 5                # then give up on the source: a 429 isn't worth hammering
 UNSPLASH_API = "https://api.unsplash.com/photos/random"
 UNSPLASH_TERMS = ["landscape", "mountains", "ocean", "forest", "architecture", "abstract",
@@ -1535,6 +1550,25 @@ def download_image(url, headers=None):
     except Exception as e:
         print(f"  ! download failed: {str(e)[:100]}", file=sys.stderr)
         return None
+
+def trim_white_border(im, min_trim=0.02):
+    """`im` without a flat near-white border (a press graphic padded out to 16:9), so it is
+    judged and shown by its real shape instead of filling the screen with white bars. Black
+    borders are kept: space around a planet is part of the picture."""
+    small = im.copy(); small.thumbnail((400, 400))
+    corners = [small.getpixel(p) for p in ((0, 0), (small.width-1, 0), (0, small.height-1),
+                                            (small.width-1, small.height-1))]
+    if not all(min(c) >= 250 for c in corners):          # padding is pure white; fog and snow are not
+        return im
+    mask = small.convert("L").point(lambda v: 255 if v < 245 else 0)
+    box = mask.getbbox()
+    if not box:
+        return im
+    kx, ky = im.width / small.width, im.height / small.height
+    box = (int(box[0]*kx), int(box[1]*ky), min(im.width, round(box[2]*kx)), min(im.height, round(box[3]*ky)))
+    if (box[2]-box[0]) > im.width*(1-min_trim) and (box[3]-box[1]) > im.height*(1-min_trim):
+        return im
+    return im.crop(box)
 
 def is_grayscale(im, threshold=0.06):
     """True for a (near) black-and-white image: raw probe frames that look dull on a wall."""
@@ -1611,19 +1645,20 @@ def wikimedia_candidates(term, exclude=()):
     return out
 
 def nasa_candidates(term, exclude=()):
-    """Candidates from NASA's image library for `term`, from a random page of its hits.
+    """Candidates from NASA's image library for `term`, from a random one of its first
+    NASA_MAX_PAGE pages of hits.
     Each hit lists its original's pixel size, so small ones are skipped unseen."""
     def page(n):
         return (met_json(NASA_API, params={"q": term, "media_type": "image", "page": str(n)})
                 .get("collection") or {})
     first = page(1)
-    pages = min(100, -(-int((first.get("metadata") or {}).get("total_hits") or 0) // 100))
+    pages = min(NASA_MAX_PAGE, -(-int((first.get("metadata") or {}).get("total_hits") or 0) // 100))
     n = random.randint(1, max(1, pages))
     col = first if n == 1 else page(n)
     out = []
     for it in col.get("items") or []:
         d = (it.get("data") or [{}])[0]
-        if (d.get("center") or "").upper() in NASA_SKIP_CENTRES or NASA_SKIP_TITLE.search(d.get("title") or ""):
+        if (d.get("center") or "").upper() in NASA_SKIP_CENTRES or nasa_is_graphic(d.get("title"), d.get("description")):
             continue
         orig = next((l for l in it.get("links") or [] if l.get("rel") == "canonical"), None)
         if not orig or not re.search(r"\.(jpe?g|png)$", orig.get("href") or "", re.I):
@@ -1745,6 +1780,7 @@ def fetch_modern(src, count, query, mat_rgb, placard=False, describe="off", qr=T
         if src == "nasa" and is_grayscale(art):
             print(f"  - black and white: {title}")
             continue
+        art = trim_white_border(art)
         pf = fills_screen(*art.size, tw, th, fill, fill_tol)
         if fill and not pf and not fill_mat:
             continue

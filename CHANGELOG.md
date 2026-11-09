@@ -22,8 +22,20 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   modern run usually landed on the blurred backdrop. Candidates that fill the screen within
   the fill tolerance are now tried first; the backdrop is used only when none of them
   fits. (2026-11-09)
-- **No NASA charts.** NASA hits titled as an illustration, infographic, diagram, chart, map
-  or labelled comparison are skipped: they look like a slide on the wall. (2026-11-09)
+- **No NASA charts, diagrams or clean-room shots.** NASA hits titled as an illustration,
+  graphic, infographic, diagram, chart, cutaway, schematic, artist's concept, map or
+  labelled comparison are skipped, and so are ones whose description opens by calling them
+  one ("This graphic compares…") or by describing engineers at work. A curated "Jupiter"
+  search had picked a labelled Ceres cutaway, a four-panel mission graphic and a
+  spacecraft in JPL's clean room. (2026-11-09)
+- **White padding is trimmed.** Some NASA press images are a square picture padded with
+  white to 16:9, which "filled" the screen with white bars. A flat near-white border is
+  now cut off before the fit is judged, so the picture goes on the backdrop by its real
+  shape. Black borders are kept. (2026-11-09)
+- **NASA searches stay near the top of the results.** A run used a random page out of up
+  to 100, and the deep pages of "Jupiter" or "Saturn" are wind-tunnel models, pool tests
+  and team meetings. It now picks from the first 5 pages, where the science images
+  are. (2026-11-09)
 
 ### Added
 - **Leave out pictures of…** A list of words a modern source skips (default: church, temple,

@@ -759,6 +759,56 @@ class TestNasaCandidates(unittest.TestCase):
         with Patch(fp, met_json=fake):
             self.assertEqual([c["id"] for c in fp.nasa_candidates("saturn")], ["nasa:PIA1"])
 
+    def test_only_the_most_relevant_pages_are_used(self):
+        """Bug: a random page of up to 100 reached page 20+ of "Jupiter", which is wind-tunnel
+        models and team meetings."""
+        pages = set()
+        def fake(url, params=None, timeout=30):
+            pages.add(int(params["page"]))
+            return {"collection": {"metadata": {"total_hits": 9000}, "items": []}}
+        with Patch(fp, met_json=fake):
+            for _ in range(60):
+                fp.nasa_candidates("jupiter")
+        self.assertLessEqual(max(pages), fp.NASA_MAX_PAGE)
+        self.assertGreater(len(pages), 1)
+
+    def test_an_illustration_named_only_in_its_description_is_dropped(self):
+        """Bug: "Fluid Flow in Ceres Due to Core Heating", a labelled cutaway, got through on
+        its title; its description opens "This illustration depicts the interior..."."""
+        self.assertTrue(fp.nasa_is_graphic("Fluid Flow in Ceres Due to Core Heating",
+                                           "<p>This illustration depicts the interior of dwarf planet Ceres</p>"))
+        self.assertTrue(fp.nasa_is_graphic("TRAPPIST-1e", "An artist's concept of the planet."))
+        self.assertTrue(fp.nasa_is_graphic("Cutaway of Europa", ""))
+        self.assertTrue(fp.nasa_is_graphic("Engine Schematic", None))
+        self.assertTrue(fp.nasa_is_graphic("Atmospheric Circulation Cells on Earth and Jupiter",
+                                           "This graphic compares the atmospheric circulations"))
+        self.assertTrue(fp.nasa_is_graphic("NASA's Europa Clipper Takes Center Stage",
+                                           "Engineers and technicians work on the towering main body"))
+
+    def test_photographs_are_kept(self):
+        self.assertFalse(fp.nasa_is_graphic("Jupiter's Great Red Spot",
+                                            "Juno photographed the storm; scientists mapped its winds."))
+        self.assertFalse(fp.nasa_is_graphic("Pillars of Creation", "A comparison of Hubble and Webb views."))
+        self.assertFalse(fp.nasa_is_graphic("Saturn's Rings", "A photographic mosaic from Cassini."))
+        self.assertFalse(fp.nasa_is_graphic("Saturn", "x" * fp.NASA_DESC_CHARS + " illustration"))
+
+    def test_white_padding_is_trimmed_before_the_fit_is_judged(self):
+        """Bug: a square infrared map padded with white to 16:9 'filled' the screen,
+        white bars and all."""
+        im = Image.new("RGB", (1600, 900), (255, 255, 255))
+        im.paste(Image.new("RGB", (900, 900), (190, 10, 0)), (350, 0))
+        out = fp.trim_white_border(im)
+        self.assertLess(abs(out.width - 900), 10)
+        self.assertEqual(out.height, 900)
+
+    def test_black_space_and_unpadded_pictures_are_left_alone(self):
+        im = Image.new("RGB", (1600, 900), (0, 0, 0))
+        im.paste(Image.new("RGB", (400, 400), (200, 180, 150)), (600, 250))
+        self.assertIs(fp.trim_white_border(im), im)
+        sky = Image.new("RGB", (1600, 900), (250, 250, 252))
+        sky.paste(Image.new("RGB", (1600, 300), (40, 90, 30)), (0, 600))
+        self.assertIs(fp.trim_white_border(sky), sky)     # a white sky reaching the edge
+
     def test_grayscale_detection(self):
         self.assertTrue(fp.is_grayscale(Image.new("RGB", (100, 100), (120, 120, 120))))
         self.assertFalse(fp.is_grayscale(Image.new("RGB", (100, 100), (200, 60, 40))))
