@@ -1,10 +1,11 @@
 # The Frame Machine
 
-Turn a **Samsung The Frame** TV into a self-refreshing museum wall — for free, with no Art
-Store subscription. Every day it pulls a public-domain artwork from **The Metropolitan Museum
-of Art's** open collection, lays it out as a gallery display (artwork + wall label), and pushes
-it to the TV over the local network. Optionally, it captions each piece with a gleefully
-made-up story and stamps on a QR code to the real museum page.
+Turn a **Samsung The Frame** TV into a self-refreshing gallery wall — for free, with no Art
+Store subscription. On a schedule it pulls a fresh, high-resolution picture — modern photography
+from **Wikimedia Commons' featured pictures**, **NASA** and **Unsplash**, or public-domain art
+from **The Met** and the **Cleveland Museum of Art** — fits it to the screen edge to edge, and
+pushes it to the TV over the local network. Optionally it adds a museum-style label, a
+gleefully made-up caption and a QR code to the real page.
 
 It runs entirely on your own machine (a Mac mini, a Raspberry Pi, any always-on box) and talks
 to the TV directly over its local WebSocket API — no cloud, no account, no subscription.
@@ -14,7 +15,7 @@ to the TV directly over its local WebSocket API — no cloud, no account, no sub
 </p>
 <p align="center"><em>Everything runs from one phone-friendly web page.</em></p>
 
-![example placard](docs/example.jpg)
+![Earth at night from the ISS, shown full screen](docs/example-fullscreen.jpg)
 
 > ⚠️ **A word of warning.** This is vibe-coded by someone who has no idea what they're doing.
 > It will almost certainly break your TV, and there is a non-trivial chance it will run away
@@ -23,34 +24,59 @@ to the TV directly over its local WebSocket API — no cloud, no account, no sub
 
 ## Examples
 
+| Full screen (the default) | A tall piece on its blurred backdrop |
+|---|---|
+| ![](docs/example-fullscreen.jpg) | ![](docs/example-backdrop.jpg) |
+
+By default every piece fills the screen. A picture within 20% of the screen's shape is trimmed
+to fit (keeping its most detailed part); anything else — portraits, panoramas — is shown whole
+on a blurred, dimmed copy of itself, so there's never a flat border.
+*Left: Earth at night from the ISS (NASA, public domain). Right: HH 30 (ESA/Webb, NASA & CSA,
+Tazaki et al., [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)).*
+
+The museum-label layout is still there if you want it (Screen fit → Museum label):
+
 | Made-up tale (a painting) | The Met's real caption (an object) | A sculpture, made-up |
 |---|---|---|
 | ![](docs/example.jpg) | ![](docs/example-real.jpg) | ![](docs/example-object.jpg) |
 
-Every piece keeps its real artist, title and date up top; the story below is either the Met's
-own words, a cheerfully invented tale, or nothing — your choice. A QR code (toggleable) links
-to the genuine museum page.
+Every piece keeps its real artist, title and date up top; the story below is either the
+museum's own words, a cheerfully invented tale, or nothing — your choice. A QR code
+(toggleable) links to the genuine page.
 
 ## What it does
 
-- **Free art, daily.** Fetches public-domain works from the keyless [Met Collection API](https://metmuseum.github.io/).
-  The art is CC0 (public domain) — yours to display.
+- **Modern pictures, not just old masters.** The default *modern mix* picks each time from:
+  - [Wikimedia Commons featured pictures](https://commons.wikimedia.org/wiki/Commons:Featured_pictures)
+    — community-vetted photography (landscapes, coasts, night skies, cities). Keyless. Mostly
+    CC BY / CC BY-SA licensed; the panel shows the photographer and licence.
+  - [NASA's image library](https://images.nasa.gov) — nebulae, galaxies, planets, Earth from
+    orbit. Keyless, public domain. Press photos (launches, briefings) and black-and-white probe
+    frames are filtered out.
+  - [Unsplash](https://unsplash.com) — curated photography. Needs a free access key (the
+    installer or the panel asks for it); without one the mix just skips Unsplash.
+- **Fullscreen by default.** Every piece fills the 4K screen: near-screen-shaped pictures are
+  trimmed to fit, everything else sits on a blurred copy of itself. Low-resolution images are
+  skipped rather than blown up.
+- **Free museum art too.** Public-domain works from the keyless [Met Collection API](https://metmuseum.github.io/)
+  and the Cleveland Museum of Art (CC0) — pick one, either, or *everything* (museums and modern).
 - **Finds the TV by MAC address.** Survives DHCP changes — no static IP needed. Wakes the TV
   (Wake-on-LAN) and waits for the art channel before uploading.
-- **Museum-placard layout.** Fits the artwork with a keyline and renders a real gallery label
-  beside it: artist, dates, title, year, medium, dimensions, credit line.
-- **Genres or the whole museum.** Pick a style (`impressionist`, `ukiyo-e`, `old-masters`,
+- **Museum-placard layout (optional).** Fits the artwork with a keyline and renders a real
+  gallery label beside it: artist, dates, title, year, medium, dimensions, credit line.
+- **Genres or the whole museum** (museum sources). Pick a style (`impressionist`, `ukiyo-e`, `old-masters`,
   `landscape`), cycle one genre per day, or `museum` mode for a random piece from the entire
   ~500,000-object collection — any type: paintings, prints, sculpture, ceramics, armour.
 - **Made-up stories (optional).** With an Anthropic API key, each piece gets a two-sentence,
   deliberately absurd invented backstory. The real artist/title/date stay accurate up top; a
   **QR code** links to the genuine Met page so you can check the truth.
-- **Rotates cleanly.** `--replace` prunes the previous day's upload so nothing piles up. Never
-  touches art you added yourself.
+- **Rotates cleanly.** `--replace` prunes older uploads so nothing piles up. Samsung's own art
+  is left alone, but **every other uploaded image on the TV counts** — including photos you added
+  from your phone — so keep anything precious somewhere else.
 - **Web control panel.** A phone-friendly page to pick the content, caption style, how often the
   art changes and when — with **Preview** and **Change now** buttons. No config-file editing.
-- **Two museums.** The Met *and* the Cleveland Museum of Art (both keyless, CC0) — pick one or
-  let it choose either at random. Resilient if one source ever changes.
+- **Resilient sources.** If a source comes back empty or is down, the run quietly tries
+  another one before falling back to a favourite.
 - **Caption voices.** Made-up tales in ~18 tones — whimsical, noir, epic, haiku, limerick,
   conspiracy, pirate, Shakespearean, corporate, Gen-Z, Attenborough, sarcastic, **topical**
   (ties the piece to a real, current news headline), first-person, movie-trailer, tabloid
@@ -127,7 +153,7 @@ pip install -r requirements.txt
 export FRAME_MAC=AA:BB:CC:DD:EE:FF          # your TV's wireless MAC (About This TV, or your router)
 python3 app.py --port 8080                  # the control panel, then open http://localhost:8080
 # or drive it from the command line directly:
-python3 frame_push.py --fetch 1 --placard --replace   # first run shows an "Allow" prompt on the TV
+python3 frame_push.py --fetch 1 --replace             # first run shows an "Allow" prompt on the TV
 ```
 The pairing token is saved to `~/.config/frame/token.txt` (tied to the TV, not the IP).
 </details>
@@ -145,14 +171,17 @@ When the installer finishes it prints a link — open it on any phone or laptop 
   noir, Shakespearean, Attenborough, topical…), one picked each time. Set how often each voice
   turns up — **Off / Rarely / Normal / Often** — so you can dial back the ones you don't love
   without losing them entirely. The panel also shows which voice wrote the current caption.
-- **Content:** the whole museum, a single genre, a genre-a-day cycle, or *"only show art of
-  cats"*. Pick the museum (the Met, Cleveland, or either).
+- **Source:** the modern mix (Wikimedia, NASA, Unsplash), one of them, a museum (the Met,
+  Cleveland, or either), or everything. Paste an Unsplash access key here to enable Unsplash.
+- **Content:** *"only show art of cats"* for any source; for museums also the whole museum, a
+  single genre, or a genre-a-day cycle.
 - **Spice modes** — season, holidays, live weather, *on this day*, and googly eyes — each set to
   **Never / Rarely / Sometimes / Always** so they turn up as often (or as rarely) as you like.
-- **Screen fit:** show every piece whole on a mat, or **fill the screen** — only wide,
-  screen-shaped pieces get picked (you choose how much trimming is acceptable: 10/20/30%),
-  and they're shown edge to edge with no mat.
-- **Object types**, **mat colour**, and a **QR-code** toggle.
+- **Screen fit:** *Smart* (the default) fills the screen with anything within 20% of its
+  shape and puts the rest on the backdrop; or fill only with screen-shaped pieces (you choose
+  how much trimming is acceptable: 10/20/30%), crop everything, or show every piece whole.
+- **Backdrop** (a blurred copy of the art, or a mat colour), **museum label** on/off,
+  **object types**, and a **QR-code** toggle.
 - **How often** the art changes — **any interval** you like: every N minutes, hours, or once a
   day at a set time. The panel builds the schedule for you (launchd on macOS, cron on Linux).
 - **♥ Favourite** a piece (it returns more often), **Stop this from changing**, or **Never show
@@ -175,7 +204,9 @@ persist. For scheduled changes, set the schedule in the panel (writes cron insid
 Prefer the terminal? `frame_push.py` does everything via flags (they override `config.json`):
 
 ```bash
-python3 frame_push.py --theme museum --describe made-up     # a random piece + a tall tale
+python3 frame_push.py --source wikimedia                     # a featured photo, full screen
+python3 frame_push.py --source nasa --subject saturn         # Saturn, from NASA
+python3 frame_push.py --source met --placard --describe made-up   # a museum piece + label + a tall tale
 python3 frame_push.py --source cleveland --subject cats     # Cleveland, cats only
 python3 frame_push.py --weather                             # match the live local weather
 python3 frame_push.py --on-this-day                        # art tied to a historical event today
@@ -212,7 +243,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.frameart.pli
 # reload after edits:  launchctl bootout gui/$(id -u)/com.example.frameart && launchctl bootstrap ...
 ```
 
-**Linux (cron).** `30 7 * * *  FRAME_MAC=AA:.. /usr/bin/python3 /path/frame_push.py --fetch 1 --theme museum --placard --all-types --describe real --replace`
+**Linux (cron).** `30 7 * * *  FRAME_MAC=AA:.. /usr/bin/python3 /path/frame_push.py --fetch 1 --source modern --fill --fill-mat --fill-tolerance 0.2 --mat blur --no-placard --replace`
 
 ## Gotchas
 
@@ -225,9 +256,14 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.frameart.pli
 
 ## Credits & notes
 
-- Art & metadata: [The Met Collection API](https://metmuseum.github.io/) (Open Access, CC0).
+- Pictures & metadata: [The Met Collection API](https://metmuseum.github.io/) (Open Access, CC0),
+  the [Cleveland Museum of Art Open Access API](https://openaccess-api.clevelandart.org/) (CC0),
+  [Wikimedia Commons](https://commons.wikimedia.org) (each file's own licence, credited in the
+  panel), the [NASA Image and Video Library](https://images.nasa.gov) (public domain) and
+  [Unsplash](https://unsplash.com) ([Unsplash Licence](https://unsplash.com/license)).
 - TV control: [samsungtvws](https://github.com/xchwarze/samsung-tv-ws-api).
-- Not affiliated with or endorsed by Samsung, The Metropolitan Museum of Art, or Anthropic.
+- Not affiliated with or endorsed by Samsung, The Metropolitan Museum of Art, the Cleveland
+  Museum of Art, the Wikimedia Foundation, NASA, Unsplash, or Anthropic.
   "The Frame" is a Samsung trademark. Respect the Met's [Open Access terms](https://www.metmuseum.org/about-the-met/policies-and-documents/open-access).
 
 ## License

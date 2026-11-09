@@ -553,6 +553,358 @@ class TestFillTheScreen(unittest.TestCase):
         self.assertEqual(flags[flags.index("--fill-tolerance") + 1], "1.0")
 
 
+# ------------------------------------------------------------------- fullscreen layout
+class TestFullscreenLayout(TempState):
+    """2026-11: the TV kept showing the old museum-label layout because a saved config
+    still had placard on and fill off. A pre-v2 config is moved to fullscreen once."""
+
+    def _write(self, d):
+        import json
+        with open(fp.CONFIG, "w") as f:
+            json.dump(d, f)
+
+    def _read(self):
+        import json
+        with open(fp.CONFIG) as f:
+            return json.load(f)
+
+    def test_an_old_config_is_moved_to_fullscreen_and_saved(self):
+        self._write({"placard": True, "fill": False, "mat": "linen", "source": "met", "mac": "aa"})
+        cfg = fp.load_config()
+        for k, v in fp.FULLSCREEN_LAYOUT.items():
+            self.assertEqual(cfg[k], v, k)
+        self.assertEqual(cfg["source"], "modern")
+        self.assertEqual(cfg["mac"], "aa", "unrelated settings must survive")
+        self.assertEqual(self._read()["layout_version"], fp.LAYOUT_VERSION, "not persisted")
+
+    def test_it_happens_once_so_a_later_choice_sticks(self):
+        self._write({"placard": True, "source": "met", "layout_version": fp.LAYOUT_VERSION})
+        cfg = fp.load_config()
+        self.assertTrue(cfg["placard"])
+        self.assertEqual(cfg["source"], "met")
+
+    def test_a_modern_source_already_chosen_is_kept(self):
+        self._write({"source": "nasa"})
+        self.assertEqual(fp.load_config()["source"], "nasa")
+
+    def test_a_hand_edited_version_still_migrates_instead_of_failing(self):
+        """A raise here would leave load_config on bare DEFAULTS, and the next panel save
+        would then overwrite the real config (password included)."""
+        self._write({"layout_version": "abc", "password": "pw", "placard": True})
+        cfg = fp.load_config()
+        self.assertEqual(cfg["password"], "pw")
+        self.assertFalse(cfg["placard"])
+
+    def test_the_defaults_are_fullscreen(self):
+        self.assertFalse(fp.DEFAULTS["placard"])
+        self.assertTrue(fp.DEFAULTS["fill"] and fp.DEFAULTS["fill_mat"])
+        self.assertEqual(fp.DEFAULTS["mat"], "blur")
+        self.assertIn(fp.DEFAULTS["source"], fp.SOURCE_CHOICES)
+        self.assertEqual(fp.DEFAULTS["layout_version"], fp.LAYOUT_VERSION)
+
+    def test_a_3_2_photo_fills_at_the_default_tolerance(self):
+        """Most camera photos are 3:2 (15.6% trim). At the old 0.15 they all fell back to
+        the backdrop instead of filling the screen."""
+        tw, th = fp.fill_target(False)
+        self.assertTrue(fp.fills_screen(6000, 4000, tw, th, True, fp.DEFAULTS["fill_tolerance"]))
+
+
+class TestBlurBackdrop(unittest.TestCase):
+    def test_blur_puts_the_whole_piece_on_a_screen_sized_backdrop(self):
+        art = Image.new("RGB", (2000, 3000), (200, 60, 40))
+        out = fp.mat_image(art, fp.MAT_COLORS["blur"])
+        self.assertEqual(out.size, fp.CANVAS)
+        self.assertEqual(out.getpixel((fp.CANVAS[0] // 2, fp.CANVAS[1] // 2)), (200, 60, 40))
+        corner = out.getpixel((5, 5))
+        self.assertTrue(all(c < v for c, v in zip(corner, (200, 61, 41))), "backdrop isn't dimmed")
+        self.assertNotIn(fp.MAT_COLORS["charcoal"], (corner,))
+
+    def test_the_label_falls_back_to_a_flat_colour(self):
+        out = fp.mat_with_placard(Image.new("RGB", (2000, 3000), (200, 60, 40)),
+                                  {"title": "t"}, fp.MAT_COLORS["blur"])
+        self.assertEqual(out.getpixel((5, 5)), fp.PLACARD_FALLBACK_MAT)
+
+    def test_prep_local_accepts_blur(self):
+        tmp = tempfile.mkdtemp()
+        src = os.path.join(tmp, "a.jpg")
+        Image.new("RGB", (800, 1200), (10, 200, 10)).save(src)
+        real = fp.TMP
+        fp.TMP = os.path.join(tmp, "out")
+        try:
+            out = fp.prep_local([src], fp.MAT_COLORS["blur"])
+        finally:
+            fp.TMP = real
+        self.assertEqual(Image.open(out[0]).size, fp.CANVAS)
+
+
+# ------------------------------------------------------------------- modern sources
+class Patch:
+    """Temporarily replace attributes on a module."""
+    def __init__(self, mod, **attrs):
+        self.mod, self.attrs = mod, attrs
+
+    def __enter__(self):
+        self.saved = {k: getattr(self.mod, k) for k in self.attrs}
+        for k, v in self.attrs.items():
+            setattr(self.mod, k, v)
+        return self
+
+    def __exit__(self, *exc):
+        for k, v in self.saved.items():
+            setattr(self.mod, k, v)
+        return False
+
+
+class TestSourcePick(TempState):
+    def setUp(self):
+        super().setUp()
+        self._env = os.environ.pop("UNSPLASH_ACCESS_KEY", None)
+
+    def tearDown(self):
+        if self._env is not None:
+            os.environ["UNSPLASH_ACCESS_KEY"] = self._env
+        super().tearDown()
+
+    def test_mixes_skip_unsplash_without_a_key(self):
+        for _ in range(60):
+            self.assertIn(fp.pick_source("modern"), ("wikimedia", "nasa"))
+            self.assertNotEqual(fp.pick_source("everything"), "unsplash")
+
+    def test_a_saved_key_brings_unsplash_into_the_mix(self):
+        with open(os.path.join(fp.CFG, "unsplash_key.txt"), "w") as f:
+            f.write("abc\n")
+        self.assertEqual(fp.unsplash_key(), "abc")
+        self.assertIn("unsplash", {fp.pick_source("modern") for _ in range(200)})
+
+    def test_a_single_source_is_returned_as_is(self):
+        for src in fp.MUSEUM_SOURCES + fp.MODERN_SOURCES:
+            self.assertEqual(fp.pick_source(src), src)
+
+    def test_every_source_has_a_fallback_and_a_name(self):
+        for src in fp.MUSEUM_SOURCES + fp.MODERN_SOURCES:
+            self.assertIn(fp.SOURCE_FALLBACK[src], fp.SOURCE_NAMES)
+            self.assertIn(src, fp.SOURCE_NAMES)
+
+
+def _wm_page(pid, title, objname="", date="2021-05-01 10:00", mime="image/jpeg", w=6000, h=4000):
+    return {"pageid": pid, "ns": 6, "title": title, "imageinfo": [{
+        "width": w, "height": h, "mime": mime, "url": f"https://upload/{pid}.jpg",
+        "thumburl": f"https://thumb/{pid}.jpg", "descriptionurl": f"https://commons/{pid}",
+        "extmetadata": {"ObjectName": {"value": objname}, "DateTimeOriginal": {"value": date},
+                        "Artist": {"value": "<bdi><a href='x'>Ann Example</a></bdi>"},
+                        "LicenseShortName": {"value": "CC BY-SA 4.0"},
+                        "ImageDescription": {"value": "A <i>misty</i> lake."}}}]}
+
+
+class TestWikimediaCandidates(unittest.TestCase):
+    def _run(self, pages):
+        calls = []
+        def fake(url, params=None, timeout=30):
+            calls.append(params)
+            return {"query": {"pages": {str(p["pageid"]): p for p in pages}}}
+        with Patch(fp, met_json=fake):
+            return fp.wikimedia_candidates("lake"), calls
+
+    def test_parses_and_cleans_a_featured_photo(self):
+        out, calls = self._run([_wm_page(1, "File:Misty lake.jpg", "Misty lake")])
+        c = out[0]
+        self.assertEqual(c["id"], "wm:1")
+        self.assertEqual(c["img_url"], "https://thumb/1.jpg")
+        self.assertEqual(c["meta"]["artist"], "Ann Example")
+        self.assertEqual(c["meta"]["date"], "2021-05-01")
+        self.assertEqual(c["real_text"], "A misty lake.")
+        q = calls[0]["gsrsearch"]
+        self.assertIn("incategory:Featured_pictures_on_Wikimedia_Commons", q)
+        self.assertIn("-painting", q)
+
+    def test_wikidata_markup_titles_become_readable(self):
+        out, _ = self._run([_wm_page(2, "File:Glacier.jpg",
+                                     'Glacier title QS:P1476,en:"Tasman Glacier" label QS:Len,"x"')])
+        self.assertEqual(out[0]["meta"]["title"], "Tasman Glacier")
+
+    def test_old_scans_and_non_photos_are_dropped(self):
+        out, _ = self._run([_wm_page(3, "File:Old.jpg", date="1865 date QS:P571,+1865"),
+                            _wm_page(4, "File:Map.svg", mime="image/svg+xml"),
+                            _wm_page(5, "File:New.jpg", date="")])
+        self.assertEqual([c["id"] for c in out], ["wm:5"])
+
+
+class TestNasaCandidates(unittest.TestCase):
+    def _item(self, nid, centre, href=None, w=6000, h=4000):
+        href = href or f"http://images-assets.nasa.gov/image/{nid}/{nid}~orig.jpg"
+        return {"data": [{"nasa_id": nid, "center": centre, "title": f"T {nid}",
+                          "description": "<p>Stars</p>", "date_created": "2020-01-02T00:00:00Z",
+                          "secondary_creator": "NASA/JPL"}],
+                "links": [{"rel": "preview", "href": "x~thumb.jpg"},
+                          {"rel": "canonical", "href": href, "width": w, "height": h}]}
+
+    def test_press_photos_and_non_jpegs_are_dropped(self):
+        items = [self._item("PIA1", "JPL"), self._item("KSC-1", "KSC"), self._item("HQ-1", "HQ"),
+                 self._item("PIA2", "GSFC", href="http://x/PIA2~orig.tif")]
+        def fake(url, params=None, timeout=30):
+            return {"collection": {"metadata": {"total_hits": len(items)}, "items": items}}
+        with Patch(fp, met_json=fake):
+            out = fp.nasa_candidates("nebula")
+        self.assertEqual([c["id"] for c in out], ["nasa:PIA1"])
+        self.assertTrue(out[0]["img_url"].startswith("https://"))
+        self.assertEqual((out[0]["w"], out[0]["h"]), (6000, 4000))
+        self.assertEqual(out[0]["page_url"], "https://images.nasa.gov/details/PIA1")
+
+    def test_grayscale_detection(self):
+        self.assertTrue(fp.is_grayscale(Image.new("RGB", (100, 100), (120, 120, 120))))
+        self.assertFalse(fp.is_grayscale(Image.new("RGB", (100, 100), (200, 60, 40))))
+
+
+class TestUnsplashCandidates(TempState):
+    PHOTO = {"id": "abc", "width": 6000, "height": 4000, "description": None,
+             "alt_description": "a foggy forest", "created_at": "2024-03-01T00:00:00Z",
+             "urls": {"raw": "https://images.unsplash.com/photo-1?ixid=x"},
+             "links": {"html": "https://unsplash.com/photos/abc",
+                       "download_location": "https://api.unsplash.com/photos/abc/download"},
+             "user": {"name": "Jo Snap"}}
+
+    class R:
+        def __init__(self, body, code=200):
+            self.status_code, self._body = code, body
+        def json(self):
+            return self._body
+
+    def setUp(self):
+        super().setUp()
+        self._env = os.environ.pop("UNSPLASH_ACCESS_KEY", None)
+
+    def tearDown(self):
+        if self._env is not None:
+            os.environ["UNSPLASH_ACCESS_KEY"] = self._env
+        super().tearDown()
+
+    def test_no_key_means_no_request(self):
+        calls = []
+        with Patch(fp, http_get=lambda *a, **k: calls.append(a)):
+            self.assertEqual(fp.unsplash_candidates("fog"), [])
+        self.assertEqual(calls, [])
+
+    def test_parses_photos_and_pings_the_download_endpoint_on_use(self):
+        os.environ["UNSPLASH_ACCESS_KEY"] = "KEY"
+        calls = []
+        def fake(url, params=None, headers=None, tries=4, timeout=30):
+            calls.append((url, params, headers))
+            return self.R([self.PHOTO])
+        with Patch(fp, http_get=fake):
+            out = fp.unsplash_candidates("fog")
+            self.assertEqual(calls[0][2]["Authorization"], "Client-ID KEY")
+            self.assertEqual(calls[0][1]["query"], "fog")
+            self.assertEqual(calls[0][1]["orientation"], "landscape")
+            c = out[0]
+            self.assertEqual(c["img_url"], "https://images.unsplash.com/photo-1?ixid=x&w=3840&fm=jpg&q=88")
+            self.assertEqual(c["meta"]["credit"], "Photo by Jo Snap on Unsplash")
+            self.assertEqual(c["meta"]["title"], "a foggy forest")
+            c["on_use"]()
+        self.assertEqual(calls[-1][0], "https://api.unsplash.com/photos/abc/download")
+
+    def test_the_key_is_never_sent_to_another_host(self):
+        os.environ["UNSPLASH_ACCESS_KEY"] = "KEY"
+        photo = dict(self.PHOTO, links={"html": "h", "download_location": "https://evil.example/x"})
+        calls = []
+        def fake(url, params=None, headers=None, tries=4, timeout=30):
+            calls.append(url)
+            return self.R([photo])
+        with Patch(fp, http_get=fake):
+            fp.unsplash_candidates("fog")[0]["on_use"]()
+        self.assertEqual(calls, [fp.UNSPLASH_API])
+
+    def test_a_rejected_key_gives_no_candidates(self):
+        os.environ["UNSPLASH_ACCESS_KEY"] = "BAD"
+        with Patch(fp, http_get=lambda *a, **k: self.R({"errors": ["OAuth error"]}, 401)):
+            self.assertEqual(fp.unsplash_candidates(None), [])
+
+
+class TestFetchModern(TempState):
+    def _cand(self, cid, w=6000, h=4000, **kw):
+        return {"id": cid, "img_url": f"https://x/{cid}.jpg", "w": w, "h": h, "page_url": f"https://p/{cid}",
+                "real_text": "", "meta": {"title": cid, "artist": "A", "date": "2020", "credit": "c"}, **kw}
+
+    def test_renders_records_and_calls_on_use(self):
+        used = []
+        cands = [self._cand("nasa:1", on_use=lambda: used.append(1))]
+        with Patch(fp, nasa_candidates=lambda term: cands,
+                   download_image=lambda url, headers=None: Image.new("RGB", (6000, 4000), (200, 60, 40))):
+            paths = fp.fetch_modern("nasa", 1, None, None, fill=True, fill_mat=True)
+        self.assertEqual(len(paths), 1)
+        self.assertEqual(Image.open(paths[0]).size, fp.CANVAS)
+        self.assertEqual(used, [1])
+        self.assertEqual(fp.LAST_PIECES[0]["source"], "NASA")
+        self.assertEqual(fp.LAST_PIECES[0]["id"], "nasa:1")
+
+    def test_small_listed_images_are_never_downloaded(self):
+        fetched = []
+        with Patch(fp, wikimedia_candidates=lambda term: [self._cand("wm:1", 800, 600)],
+                   download_image=lambda url, headers=None: fetched.append(url)):
+            self.assertEqual(fp.fetch_modern("wikimedia", 1, None, None, fill=True, fill_mat=True), [])
+        self.assertEqual(fetched, [])
+
+    def test_gives_up_after_repeated_failed_downloads(self):
+        tries = []
+        cands = [self._cand(f"wm:{i}") for i in range(20)]
+        with Patch(fp, wikimedia_candidates=lambda term: cands,
+                   download_image=lambda url, headers=None: tries.append(url)):
+            fp.fetch_modern("wikimedia", 1, None, None)
+        self.assertEqual(len(tries), fp.MAX_FAILED_DOWNLOADS)
+
+    def test_banned_and_recent_pieces_are_avoided(self):
+        fetched = []
+        with Patch(fp, nasa_candidates=lambda term: [self._cand("nasa:1")],
+                   download_image=lambda url, headers=None: fetched.append(url)):
+            fp.fetch_modern("nasa", 1, None, None, avoid={"nasa:1"})
+        self.assertEqual(fetched, [])
+
+    def test_an_api_that_changed_shape_gives_no_candidates_not_a_crash(self):
+        def broken(url, params=None, timeout=30):
+            return {"collection": {"metadata": {"total_hits": "lots"}, "items": []}}
+        with Patch(fp, met_json=broken):
+            self.assertEqual(fp.fetch_modern("nasa", 1, None, None), [])
+
+    def test_black_and_white_nasa_frames_are_skipped(self):
+        with Patch(fp, nasa_candidates=lambda term: [self._cand("nasa:1")],
+                   download_image=lambda url, headers=None: Image.new("RGB", (6000, 4000), (90, 90, 90))):
+            self.assertEqual(fp.fetch_modern("nasa", 1, None, None), [])
+
+
+class TestUnsplashKeyInThePanel(TempState):
+    def setUp(self):
+        super().setUp()
+        self.client = app.app.test_client()
+
+    def test_the_key_is_saved_to_its_own_file_not_the_page(self):
+        import json, stat
+        with NoServiceControl():
+            r = self.client.post("/save", json={"source": "unsplash", "unsplash_key": "SECRETKEY"})
+        self.assertEqual(r.status_code, 200)
+        path = os.path.join(fp.CFG, "unsplash_key.txt")
+        with open(path) as f:
+            self.assertEqual(f.read().strip(), "SECRETKEY")
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+        with open(fp.CONFIG) as f:
+            self.assertNotIn("unsplash_key", json.load(f))
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertNotIn("SECRETKEY", page)
+        self.assertIn("saved ✓", page)
+
+    def test_a_blank_field_keeps_the_saved_key(self):
+        with open(os.path.join(fp.CFG, "unsplash_key.txt"), "w") as f:
+            f.write("OLD\n")
+        with NoServiceControl():
+            self.client.post("/save", json={"unsplash_key": ""})
+        with open(os.path.join(fp.CFG, "unsplash_key.txt")) as f:
+            self.assertEqual(f.read().strip(), "OLD")
+
+    def test_every_source_in_the_dropdown_is_one_the_pusher_accepts(self):
+        import re
+        offered = set(re.findall(r'<option value="([a-z]+)"', app.PAGE[app.PAGE.index('id="source"'):
+                                                                       app.PAGE.index('id="unsplashrow"')]))
+        self.assertEqual(offered, set(fp.SOURCE_CHOICES))
+
+
 # ------------------------------------------------------------------------------ state
 class TestStatusRoundTrip(TempState):
     """Bug: the pinned early return overwrote status.json with nothing, taking the

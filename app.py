@@ -112,7 +112,7 @@ def save_config(updates):
 def flags_from(cfg):
     """Turn a settings dict into frame_push.py CLI flags (so preview/now match the page)."""
     f = ["--theme", cfg["content"], "--mat", cfg["mat"], "--describe", cfg["description"],
-         "--source", cfg.get("source", "met")]
+         "--source", cfg.get("source", "modern")]
     tones = cfg.get("tone") or ["whimsical"]
     f += ["--tone", ",".join(tones if isinstance(tones, list) else [tones])]
     if cfg.get("tone_weights"):
@@ -123,7 +123,7 @@ def flags_from(cfg):
         f += ["--no-all-types"]
         if cfg.get("types"):
             f += ["--types", ",".join(cfg["types"])]
-    f += ["--placard"] if cfg.get("placard", True) else ["--no-placard"]
+    f += ["--placard"] if cfg.get("placard") else ["--no-placard"]
     f += ["--fill"] if cfg.get("fill") else ["--no-fill"]
     f += ["--fill-tolerance", str(cfg.get("fill_tolerance", 0.2))]
     f += ["--fill-mat"] if cfg.get("fill_mat") else ["--no-fill-mat"]
@@ -294,11 +294,23 @@ def run_push(extra, timeout, what):
 @app.route("/")
 def index():
     cfg = fp.load_config(); cfg.pop("password", None)   # never expose the password in the page
-    return render_template_string(PAGE, cfg=cfg, types=list(fp.TYPE_FILTERS), tones=list(fp.TONES))
+    return render_template_string(PAGE, cfg=cfg, types=list(fp.TYPE_FILTERS), tones=list(fp.TONES),
+                                  has_unsplash=bool(fp.unsplash_key()))
+
+def _take_unsplash_key(d):
+    """Pop the panel's Unsplash key field off a request and, if one was typed, save it to
+    its own file (not config.json, which the page embeds). Blank = keep the current key."""
+    key = (d.pop("unsplash_key", None) or "").strip()
+    if key:
+        os.makedirs(fp.CFG, exist_ok=True)
+        path = os.path.join(fp.CFG, "unsplash_key.txt")
+        with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+            f.write(key + "\n")
+    return d
 
 @app.route("/save", methods=["POST"])
 def save():
-    updates = request.get_json(force=True)
+    updates = _take_unsplash_key(request.get_json(force=True))
     if not updates.get("password"):        # blank field = leave the password unchanged
         updates.pop("password", None)
     cfg = save_config(updates)
@@ -306,7 +318,7 @@ def save():
 
 @app.route("/preview", methods=["POST"])
 def preview():
-    cfg = {**fp.load_config(), **request.get_json(force=True)}
+    cfg = {**fp.load_config(), **_take_unsplash_key(request.get_json(force=True))}
     r, err = run_push(["--preview", PREVIEW_PATH] + flags_from(cfg), 180, "The preview")
     if err:
         return jsonify(ok=False, message=err)
@@ -322,7 +334,7 @@ def preview_jpg():
 
 @app.route("/change-now", methods=["POST"])
 def change_now():
-    cfg = {**fp.load_config(), **request.get_json(force=True)}
+    cfg = {**fp.load_config(), **_take_unsplash_key(request.get_json(force=True))}
     r, err = run_push(["--force"] + flags_from(cfg), 300, "Changing the art")
     if err:
         return jsonify(ok=False, message=err)
@@ -579,8 +591,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <div class="card">
  <label class="f">Screen fit <span class="sub">— how the art sits on the screen</span></label>
  <select id="fill">
-   <option value="off">Any shape — matted to fit</option>
-   <option value="smart">Smart — fill the screen when it fits (trim up to 15%), otherwise matted</option>
+   <option value="off">Any shape — shown whole on the backdrop</option>
+   <option value="smart">Smart — fill the screen when it fits (trim up to 20%), otherwise on the backdrop</option>
    <option value="0.1">Fill the screen — only near-perfect fits (trim up to 10%)</option>
    <option value="0.2">Fill the screen — close enough (trim up to 20%)</option>
    <option value="0.3">Fill the screen — be generous (trim up to 30%)</option>
@@ -608,7 +620,26 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 </div>
 
 <div class="card">
- <label class="f">Content <span class="sub">— what art to pull</span></label>
+ <label class="f">Source <span class="sub">— where the art comes from</span></label>
+ <select id="source">
+   <optgroup label="Modern">
+     <option value="modern">Modern mix — Wikimedia, NASA &amp; Unsplash, a random pick each time</option>
+     <option value="wikimedia">Wikimedia Commons featured pictures — landscapes, nature, cities</option>
+     <option value="nasa">NASA — space and Earth from orbit</option>
+     <option value="unsplash">Unsplash — curated photography (needs a free key, below)</option>
+   </optgroup>
+   <optgroup label="Museums (public domain, so mostly pre-1929)">
+     <option value="met">The Met</option>
+     <option value="cleveland">Cleveland Museum of Art</option>
+     <option value="any">Either museum</option>
+   </optgroup>
+   <option value="everything">Everything — museums and modern, a random pick each time</option>
+ </select>
+ <div id="unsplashrow" style="margin-top:12px">
+   <label class="f" style="font-weight:400">Unsplash access key <span class="sub" id="unsplashstate">— {{ 'saved ✓ (type a new one to replace it)' if has_unsplash else 'not set: Unsplash is skipped in the mixes until you add one' }}</span></label>
+   <input type="password" id="unsplash_key" placeholder="free from unsplash.com/developers → New Application → Access Key" autocomplete="off" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px">
+ </div>
+ <label class="f" style="margin-top:16px">Museum content <span class="sub">— genre, when a museum is the source</span></label>
  <select id="content">
    <option value="museum">Whole museum — a random surprise</option>
    <option value="cycle">Genre cycle — a different style each day</option>
@@ -617,12 +648,6 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    <option value="old-masters">Old Masters</option>
    <option value="landscape">Landscapes</option>
    <option value="mix">Mixed classics</option>
- </select>
- <label class="f" style="margin-top:14px">Source <span class="sub">— which museum</span></label>
- <select id="source">
-   <option value="met">The Met</option>
-   <option value="cleveland">Cleveland Museum of Art</option>
-   <option value="any">Either — a random pick each time</option>
  </select>
  <label class="f" style="margin-top:16px">Only show art of… <span class="sub">— optional; combines with season/holidays (e.g. cats at Christmas → Christmas cats)</span></label>
  <input type="text" id="subject" placeholder="cats, dogs, dragons… — leave blank for none" style="width:100%;background:#303033;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px">
@@ -672,9 +697,10 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  </div>
  <p class="sub" id="schedhint" style="margin-top:8px"></p>
  <div class="row" style="margin-top:14px">
-   <div><label class="f">Mat colour</label>
-     <select id="mat"><option value="off_white">Off-white</option><option value="linen">Linen</option>
-       <option value="charcoal">Charcoal</option><option value="black">Black</option></select></div>
+   <div><label class="f">Backdrop <span class="sub">— behind pieces that don't fill the screen</span></label>
+     <select id="mat"><option value="blur">Blurred copy of the art</option>
+       <option value="off_white">Off-white mat</option><option value="linen">Linen mat</option>
+       <option value="charcoal">Charcoal mat</option><option value="black">Black mat</option></select></div>
  </div>
 </div>
 
@@ -758,7 +784,7 @@ function syncSched(){const n=Math.max(1,parseInt(el.every.value)||1), u=el.every
 el.every.oninput=syncSched; el.every_unit.onchange=syncSched;
 el.time.value=cfg.time; el.mat.value=cfg.mat; el.mac.value=cfg.mac||''; el.qr.checked=cfg.qr!==false;
 el.time.oninput=syncSched; syncSched();
-el.source.value=cfg.source||'met'; el.ntfy_topic.value=cfg.ntfy_topic||'';
+el.source.value=cfg.source||'modern'; el.ntfy_topic.value=cfg.ntfy_topic||'';
 el.hemisphere.value=cfg.hemisphere||'north'; el.subject.value=cfg.subject||'';
 el.watch_on_fail.checked=cfg.watch_on_fail!==false;
 el.latitude.value=(cfg.latitude!=null?cfg.latitude:''); el.longitude.value=(cfg.longitude!=null?cfg.longitude:'');
@@ -795,10 +821,10 @@ el.googly_strict.oninput=syncGoogly; syncGoogly();
   el.fill.value=!cfg.fill?'off':cfg.fill_mat?'smart':['0.1','0.2','0.3','1'].reduce((a,b)=>Math.abs(b-tol)<Math.abs(a-tol)?b:a);})();
 function syncFill(){const v=el.fill.value, on=v!=='off', always=(v==='1');
   let t;
-  if(!on) t='Every piece is shown whole, centred on a mat.';
+  if(!on) t='Every piece is shown whole, centred on the backdrop.';
   else if(v==='smart') t='Screen-shaped pieces fill the screen edge to edge, trimmed where they have '
-    +'the least detail; anything else (portraits, tall scrolls, odd shapes) is shown whole on the mat '
-    +'like a framed print. Nothing is skipped for its shape.';
+    +'the least detail; anything else (portraits, panoramas, odd shapes) is shown whole on the backdrop '
+    +'(a blurred copy of itself, or a mat colour). Nothing is skipped for its shape.';
   else if(always) t='Never skips a piece for its shape — edges are trimmed (keeping the most detailed part) until it fits. '
     +'A portrait painting becomes a horizontal slice of itself (a tall 2:3 canvas loses about 62% '
     +'of its area), so expect cropped-off heads on some pieces.';
@@ -829,9 +855,10 @@ function collect(){return {description:document.querySelector('#description butt
   longitude:el.longitude.value.trim()===''?null:parseFloat(el.longitude.value),
   hemisphere:el.hemisphere.value, watch_on_fail:el.watch_on_fail.checked,
   ntfy_topic:el.ntfy_topic.value.trim(), password:el.password.value,
+  unsplash_key:$('unsplash_key').value.trim(),
   every:Math.max(1,parseInt(el.every.value)||1), every_unit:el.every_unit.value, time:el.time.value, mat:el.mat.value,
   fill:el.fill.value!=='off', fill_mat:el.fill.value==='smart',
-  fill_tolerance:el.fill.value==='off'?(cfg.fill_tolerance!=null?cfg.fill_tolerance:0.2):el.fill.value==='smart'?0.15:parseFloat(el.fill.value),
+  fill_tolerance:el.fill.value==='off'?(cfg.fill_tolerance!=null?cfg.fill_tolerance:0.2):el.fill.value==='smart'?0.2:parseFloat(el.fill.value),
   mac:el.mac.value.trim(), replace:true};}
 async function readJson(r){try{return await r.json();}
   catch(e){return {ok:false,message:'The panel returned an error ('+r.status+') — check its log.'};}}
