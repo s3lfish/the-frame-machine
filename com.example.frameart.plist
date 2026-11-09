@@ -13,10 +13,11 @@
     <string>__PATH_TO__/frame_push.py</string>
     <string>--mac</string><string>__FRAME_MAC__</string>   <!-- your TV's wireless MAC -->
     <string>--fetch</string><string>1</string>
-    <string>--mat</string><string>charcoal</string>
-    <string>--theme</string><string>museum</string>
-    <string>--placard</string>
-    <string>--all-types</string>
+    <string>--source</string><string>modern</string>
+    <string>--fill</string>
+    <string>--fill-mat</string>
+    <string>--mat</string><string>blur</string>
+    <string>--no-placard</string>
     <!-- off | real | made-up ('made-up' needs an Anthropic API key) -->
     <string>--describe</string><string>real</string>
     <string>--replace</string>

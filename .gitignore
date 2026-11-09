@@ -9,6 +9,7 @@ token.txt
 uploaded.json
 met_object_ids.json
 anthropic_key.txt
+unsplash_key.txt
 last_run.txt
 *.log
 

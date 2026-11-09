@@ -5,6 +5,22 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Changed
+- **Fullscreen, modern pictures by default.** The default is now a *modern mix* —
+  Wikimedia Commons featured pictures, NASA's image library and Unsplash — shown edge
+  to edge: anything within 20% of the screen's shape is trimmed to fit, the rest sits
+  on a blurred, dimmed copy of itself (new `blur` backdrop, `--mat blur`). The museum
+  label is off by default. **An existing config is moved over once** (label off, smart
+  fill on the blurred backdrop, and a museum source switched to the modern mix); pick a
+  museum again in the panel to go back. (2026-11-09)
+
+### Added
+- Sources `wikimedia`, `nasa`, `unsplash`, `modern` (those three) and `everything`
+  (museums + modern). Wikimedia and NASA are keyless; Unsplash needs a free access key,
+  entered in the panel or the installer and kept in `~/.config/frame/unsplash_key.txt`
+  (or `UNSPLASH_ACCESS_KEY`). NASA press photos and black-and-white frames are skipped;
+  Wikimedia searches stick to scenery and leave out scanned paintings. (2026-11-09)
+
 ### Fixed
 - **No more blurry blow-ups.** Some museum "original" scans are tiny (one was 750px
   wide) and were being enlarged 4-5x to fill a 4K screen. Any picture that would need

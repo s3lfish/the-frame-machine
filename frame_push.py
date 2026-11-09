@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-frame_push.py — fetch free public-domain art and push it to a Samsung The Frame.
+frame_push.py — fetch free art (museums, Wikimedia, NASA, Unsplash) and push it to a Samsung The Frame.
 
 Finds the TV by MAC (DHCP-proof), wakes it (Wake-on-LAN), and uploads one fresh piece,
 optionally matted with a museum-style label + caption. Reads ~/.config/frame/config.json
@@ -67,7 +67,10 @@ TYPE_FILTERS = {
     "Jewelry":      ("jewel",),
     "Arms & Armor": ("arms", "armor"),
 }
-MAT_COLORS = {"off_white": (242,240,234), "linen": (228,222,210), "charcoal": (38,38,40), "black": (12,12,12)}
+# "blur" isn't a colour: the piece sits on a blurred, dimmed copy of itself, so a portrait or
+# odd shape still fills the screen edge to edge. It's carried as None through mat_rgb.
+MAT_COLORS = {"blur": None, "off_white": (242,240,234), "linen": (228,222,210), "charcoal": (38,38,40), "black": (12,12,12)}
+PLACARD_FALLBACK_MAT = (38,38,40)       # the label needs a flat colour; blur falls back to charcoal
 TERM_POOL = ["Monet","van Gogh","Cezanne","Caillebotte","Seurat","Renoir","Pissarro","Sisley",
              "Degas","Manet","Gauguin","Cassatt","Morisot","Whistler","Homer","Turner","Constable",
              "Hiroshige","Hokusai","ukiyo-e","Rembrandt","Vermeer","landscape","still life",
@@ -223,17 +226,22 @@ CONFIG = os.path.join(CFG, "config.json")   # written by the web GUI, read here 
 
 # Defaults the GUI can override via config.json.
 DEFAULTS = {"mac": "", "ip": None, "description": "made-up", "content": "museum",
-            "all_types": True, "types": [], "placard": True, "qr": True, "mat": "charcoal",
+            "all_types": True, "types": [], "placard": False, "qr": True, "mat": "blur",
             "fetch": 1, "replace": True, "frequency": "daily", "time": "07:30",
             "every": 1, "every_unit": "days",
-            "ntfy_topic": "", "tone": ["whimsical"], "source": "met", "orientation": "landscape",
+            "ntfy_topic": "", "tone": ["whimsical"], "source": "modern", "orientation": "landscape",
             "pinned": False, "seasonal": False, "hemisphere": "north",
             "subject": "", "holidays": False, "weather": False, "on_this_day": False,
             "seasonal_chance": 0.0, "holidays_chance": 0.0, "weather_chance": 0.0, "on_this_day_chance": 0.0,
             "googly": False, "googly_chance": 0.0, "googly_strictness": 0.5,
             "latitude": None, "longitude": None, "tone_weights": {},
             "watch_on_fail": True, "watch_interval": 60, "watch_timeout": 180,
-            "fill": False, "fill_tolerance": 0.2, "fill_mat": False, "max_upscale": 1.6}
+            "fill": True, "fill_tolerance": 0.2, "fill_mat": True, "max_upscale": 1.6,
+            "layout_version": 2}
+# layout_version 2 (2026-11): fullscreen by default. A config saved before it is moved over
+# once: label off, smart fill on a blurred backdrop, and modern sources instead of museums.
+LAYOUT_VERSION = 2
+FULLSCREEN_LAYOUT = {"placard": False, "fill": True, "fill_mat": True, "fill_tolerance": 0.2, "mat": "blur"}
 _TONE_WEIGHTS = None   # per-run override for made-up-voice weights (set from --tone-weights), else config's
 STATUS = os.path.join(CFG, "status.json")   # last-run outcome, for alerts + the dashboard
 HISTORY = os.path.join(CFG, "history.json") # recently displayed pieces (for no-repeats + dashboard)
@@ -271,11 +279,30 @@ def _save_list(path, data):
     except Exception:
         pass
 
+def migrate_config(saved):
+    """Bring a saved config.json dict up to LAYOUT_VERSION in place. True if it changed."""
+    if (saved.get("layout_version") or 1) >= LAYOUT_VERSION:
+        return False
+    saved.update(FULLSCREEN_LAYOUT)
+    if saved.get("source") in (None, "met", "cleveland", "any"):
+        saved["source"] = "modern"
+    saved["layout_version"] = LAYOUT_VERSION
+    return True
+
 def load_config():
     cfg = dict(DEFAULTS)
     try:
         if os.path.exists(CONFIG):
-            cfg.update({k: v for k, v in json.load(open(CONFIG)).items() if v is not None})
+            with open(CONFIG) as f:
+                saved = json.load(f)
+            if migrate_config(saved):
+                try:
+                    with open(CONFIG, "w") as f:
+                        json.dump(saved, f, indent=2)
+                    print("  config moved to the fullscreen layout (label off, modern sources)")
+                except Exception as e:
+                    print(f"  ! config migration not saved: {str(e)[:80]}", file=sys.stderr)
+            cfg.update({k: v for k, v in saved.items() if v is not None})
     except Exception as e:
         print(f"  ! config read: {str(e)[:80]}", file=sys.stderr)
     return cfg
@@ -831,14 +858,26 @@ def cover_crop(art, tw, th):
         art = art.crop((0, y0, aw, y0+nh))
     return art.resize((tw, th), Image.LANCZOS)
 
+def blur_backdrop(art):
+    """A screen-sized, blurred and dimmed cover of `art` to sit the whole piece on. Blurred
+    at 1/8 scale: far cheaper than blurring 4K, and the upscale smooths it further."""
+    cw, ch = CANVAS
+    small = art.copy()
+    small.thumbnail((cw // 4, ch // 4))
+    bg = cover_crop(small, cw // 8, ch // 8).filter(ImageFilter.GaussianBlur(6))
+    bg = bg.resize(CANVAS, Image.BILINEAR)
+    return Image.eval(bg, lambda v: int(v * 0.55))   # dim it so the sharp piece stands out
+
 def mat_image(art, mat_rgb, fill=False):
+    """The piece on the screen-sized canvas: edge to edge (fill), or whole and centred on a
+    flat mat colour, or on a blurred copy of itself when mat_rgb is None."""
     if fill:                                    # edge to edge, no mat
         return cover_crop(art, *CANVAS)
     cw, ch = CANVAS
     aw, ah = art.size
     scale = min(int(cw*MARGIN)/aw, int(ch*MARGIN)/ah)
+    canvas = blur_backdrop(art) if mat_rgb is None else Image.new("RGB", CANVAS, mat_rgb)
     art = art.resize((max(1,int(aw*scale)), max(1,int(ah*scale))), Image.LANCZOS)
-    canvas = Image.new("RGB", CANVAS, mat_rgb)
     canvas.paste(art, ((cw-art.width)//2, (ch-art.height)//2))
     return canvas
 
@@ -1061,6 +1100,7 @@ def mat_with_placard(art, meta, mat_rgb, desc=None, link=None, fill=False):
     With fill=True the art is cropped to fill the whole left region instead."""
     cw, ch = CANVAS
     M, TEXT_W, GAP = PLACARD_M, PLACARD_TEXT_W, PLACARD_GAP
+    mat_rgb = mat_rgb or PLACARD_FALLBACK_MAT
     canvas = Image.new("RGB", CANVAS, mat_rgb)
     draw = ImageDraw.Draw(canvas)
 
@@ -1402,6 +1442,272 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
             print(f"  ! skip {o.get('id')}: {str(e)[:120]}", file=sys.stderr)
     return paths
 
+# ---------- modern sources: Wikimedia featured pictures, NASA, Unsplash ----------
+# Museum open access is almost all pre-1929 (that's what public domain means). These three
+# are recent, high-resolution and free to display at home: Commons featured pictures (CC
+# licences, mostly modern photography), NASA's image library (US-government work, public
+# domain) and Unsplash (Unsplash Licence; needs a free access key). Genres and object types
+# are museum ideas and don't apply here; a query, subject or spice-mode term still does.
+MUSEUM_SOURCES = ("met", "cleveland")
+MODERN_SOURCES = ("wikimedia", "nasa", "unsplash")
+SOURCE_POOLS = {"any": MUSEUM_SOURCES, "modern": MODERN_SOURCES,
+                "everything": MUSEUM_SOURCES + MODERN_SOURCES}
+SOURCE_CHOICES = MUSEUM_SOURCES + MODERN_SOURCES + tuple(SOURCE_POOLS)
+# Where a retry goes when a source comes back empty (or, for Unsplash, has no key).
+SOURCE_FALLBACK = {"met": "cleveland", "cleveland": "met", "wikimedia": "nasa",
+                   "nasa": "wikimedia", "unsplash": "wikimedia"}
+SOURCE_NAMES = {"met": "The Met", "cleveland": CLE_NAME, "wikimedia": "Wikimedia Commons",
+                "nasa": "NASA", "unsplash": "Unsplash"}
+
+WM_API = "https://commons.wikimedia.org/w/api.php"
+WM_FEATURED = "Featured_pictures_on_Wikimedia_Commons"   # a category, searched with incategory:
+# Featured means technically excellent, not wall-friendly (it includes drilling rigs and
+# insect macros), so with no subject set the search sticks to scenery.
+WM_OLDEST_YEAR = 1950                   # older dates are scanned artworks, not photographs
+WM_TERMS = ["landscape", "sunset", "mountains", "coast", "waterfall", "night sky", "forest",
+            "lake", "aurora", "canyon", "cityscape", "desert", "glacier", "autumn", "fog"]
+NASA_API = "https://images-api.nasa.gov/search"
+NASA_TERMS = ["nebula", "galaxy", "Hubble", "Webb NIRCam", "aurora", "star cluster",
+              "supernova remnant", "Milky Way", "Saturn", "Jupiter", "Earth limb"]
+# NASA's library is half press photos: launches, briefings, people in clean rooms. Those come
+# from these centres; the science imagery comes from JPL, Goddard, STScI and the station (JSC).
+NASA_SKIP_CENTRES = {"KSC", "HQ", "MSFC", "ARC", "AFRC", "GRC", "LARC", "SSC"}
+MAX_FAILED_DOWNLOADS = 5                # then give up on the source: a 429 isn't worth hammering
+UNSPLASH_API = "https://api.unsplash.com/photos/random"
+UNSPLASH_TERMS = ["landscape", "mountains", "ocean", "forest", "architecture", "abstract",
+                  "desert", "night sky", "aerial view", "waterfall", "minimal", "coastline",
+                  "autumn", "snow", "city lights", "flowers"]
+MAX_DOWNLOAD = 80 * 1024 * 1024         # skip anything bigger than this rather than choke a Pi
+
+def unsplash_key():
+    """The Unsplash access key: UNSPLASH_ACCESS_KEY, else ~/.config/frame/unsplash_key.txt.
+    Kept out of config.json because the panel embeds that in its page."""
+    key = os.environ.get("UNSPLASH_ACCESS_KEY", "").strip()
+    if key:
+        return key
+    try:
+        with open(os.path.join(CFG, "unsplash_key.txt")) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+def pick_source(choice):
+    """One concrete source for this run from a source or pool name. Unsplash is left out of
+    a pool while there's no key for it, so a mix never wastes its run on it."""
+    pool = list(SOURCE_POOLS.get(choice, (choice,)))
+    if len(pool) > 1 and not unsplash_key():
+        pool = [s for s in pool if s != "unsplash"] or pool
+    return random.choice(pool)
+
+def _strip_html(text):
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", text or ""))).strip()
+
+def download_image(url, headers=None):
+    """Fetch and decode an image, or None. Huge JPEGs are decoded at a reduced scale (draft)
+    so a 15000px telescope mosaic doesn't need gigabytes of memory."""
+    try:
+        with requests.get(url, headers=headers or HEADERS, timeout=90, stream=True) as r:
+            r.raise_for_status()
+            if int(r.headers.get("Content-Length") or 0) > MAX_DOWNLOAD:
+                return None
+            buf = io.BytesIO()
+            for chunk in r.iter_content(1 << 20):
+                buf.write(chunk)
+                if buf.tell() > MAX_DOWNLOAD:
+                    return None
+        im = Image.open(io.BytesIO(buf.getvalue()))
+        if im.format == "JPEG":
+            im.draft("RGB", (CANVAS[0] * 2, CANVAS[1] * 2))
+        return im.convert("RGB")
+    except Exception as e:
+        print(f"  ! download failed: {str(e)[:100]}", file=sys.stderr)
+        return None
+
+def is_grayscale(im, threshold=0.06):
+    """True for a (near) black-and-white image: raw probe frames that look dull on a wall."""
+    small = im.copy(); small.thumbnail((64, 64))
+    sat = small.convert("HSV").getchannel("S")
+    return sum(sat.getdata()) / (255 * small.width * small.height) < threshold
+
+def _search_term(query, bias, pool):
+    """The term to search for: an explicit query, else a spice-mode/subject term, else a
+    random pick from the source's own pool (None = no term)."""
+    if query:
+        return query
+    if bias:
+        return random.choice(bias)
+    return random.choice(pool) if pool else None
+
+def _wm_title(name, file_title):
+    """A readable title. Artwork pages carry Wikidata markup in ObjectName
+    ('Aurora title QS:P1476,en:"Aurora" label QS:Len,...'): take the English label from it,
+    and fall back to the file name."""
+    if "QS:" in (name or ""):
+        m = re.search(r'en:"([^"]+)"', name)
+        name = m.group(1).strip() if m else ""
+    return name or re.sub(r"^File:|\.\w+$", "", file_title or "") or "Untitled"
+
+def wikimedia_candidates(term):
+    """Candidates from a search for `term` inside Commons' Featured pictures. A random offset
+    into the results (falling back to the top) keeps the same term from repeating itself."""
+    params = {"action": "query", "format": "json", "prop": "imageinfo",
+              "iiprop": "url|size|mime|extmetadata", "iiurlwidth": str(CANVAS[0]),
+              "iiextmetadatafilter": "Artist|LicenseShortName|ImageDescription|DateTimeOriginal|ObjectName",
+              "generator": "search", "gsrnamespace": "6", "gsrlimit": "50",
+              # featured paintings and old prints are the museums' job; keep this one modern
+              "gsrsearch": f'{term} -painting -"oil on canvas" -engraving incategory:{WM_FEATURED}'}
+    pages = {}
+    for offset in dict.fromkeys((random.choice((0, 50, 100)), 0)):
+        pages = (met_json(WM_API, params={**params, "gsroffset": str(offset)}).get("query") or {}).get("pages") or {}
+        if pages:
+            break
+    pages = pages.values()
+    out = []
+    for pg in pages:
+        ii = (pg.get("imageinfo") or [{}])[0]
+        if ii.get("mime") not in ("image/jpeg", "image/png") or not ii.get("width"):
+            continue
+        em = ii.get("extmetadata") or {}
+        val = lambda k: _strip_html((em.get(k) or {}).get("value"))
+        date = re.search(r"\b(\d{4})(-\d\d-\d\d)?\b", val("DateTimeOriginal"))
+        if date and int(date.group(1)) < WM_OLDEST_YEAR:
+            continue
+        out.append({"id": f"wm:{pg.get('pageid')}", "img_url": ii.get("thumburl") or ii.get("url"),
+                    "w": ii.get("width"), "h": ii.get("height"),
+                    "page_url": ii.get("descriptionurl") or "", "real_text": val("ImageDescription"),
+                    "meta": {"title": _wm_title(val("ObjectName"), pg.get("title")), "artist": val("Artist"),
+                             "date": date.group(0) if date else "",
+                             "credit": val("LicenseShortName"), "museum": "Wikimedia Commons"}})
+    return out
+
+def nasa_candidates(term):
+    """Candidates from NASA's image library for `term`, from a random page of its hits.
+    Each hit lists its original's pixel size, so small ones are skipped unseen."""
+    def page(n):
+        return (met_json(NASA_API, params={"q": term, "media_type": "image", "page": str(n)})
+                .get("collection") or {})
+    first = page(1)
+    pages = min(100, -(-int((first.get("metadata") or {}).get("total_hits") or 0) // 100))
+    n = random.randint(1, max(1, pages))
+    col = first if n == 1 else page(n)
+    out = []
+    for it in col.get("items") or []:
+        d = (it.get("data") or [{}])[0]
+        if (d.get("center") or "").upper() in NASA_SKIP_CENTRES:
+            continue
+        orig = next((l for l in it.get("links") or [] if l.get("rel") == "canonical"), None)
+        if not orig or not re.search(r"\.(jpe?g|png)$", orig.get("href") or "", re.I):
+            continue
+        nid = d.get("nasa_id") or ""
+        out.append({"id": f"nasa:{nid}", "img_url": orig["href"].replace("http://", "https://", 1),
+                    "w": orig.get("width"), "h": orig.get("height"),
+                    "page_url": f"https://images.nasa.gov/details/{nid}",
+                    "real_text": _strip_html(d.get("description")),
+                    "meta": {"title": d.get("title") or "Untitled",
+                             "artist": d.get("photographer") or d.get("secondary_creator") or d.get("center") or "NASA",
+                             "date": (d.get("date_created") or "")[:10], "credit": "NASA", "museum": "NASA"}})
+    return out
+
+def unsplash_candidates(term):
+    """Candidates from Unsplash's random endpoint (30 landscape photos, safe-search high).
+    Using one has to ping its download_location, per Unsplash's API guidelines."""
+    key = unsplash_key()
+    if not key:
+        print("  unsplash: no access key (panel → Source, or ~/.config/frame/unsplash_key.txt)")
+        return []
+    auth = {**HEADERS, "Authorization": f"Client-ID {key}", "Accept-Version": "v1"}
+    params = {"count": "30", "orientation": "landscape", "content_filter": "high"}
+    if term:
+        params["query"] = term
+    r = http_get(UNSPLASH_API, params=params, headers=auth, tries=2)
+    if r is None or r.status_code != 200:
+        print(f"  ! unsplash: HTTP {getattr(r, 'status_code', 'no answer')}", file=sys.stderr)
+        return []
+    try:
+        photos = r.json()
+    except ValueError:
+        return []
+    out = []
+    for ph in photos if isinstance(photos, list) else []:
+        raw = (ph.get("urls") or {}).get("raw")
+        if not raw:
+            continue
+        ping = (ph.get("links") or {}).get("download_location")
+        user = (ph.get("user") or {}).get("name") or "Unsplash"
+        out.append({"id": f"us:{ph.get('id')}",
+                    "img_url": raw + ("&" if "?" in raw else "?") + f"w={CANVAS[0]}&fm=jpg&q=88",
+                    "w": ph.get("width"), "h": ph.get("height"),
+                    "page_url": (ph.get("links") or {}).get("html") or "",
+                    "real_text": ph.get("description") or ph.get("alt_description") or "",
+                    "on_use": (lambda u=ping: u and http_get(u, headers=auth, tries=1)),
+                    "meta": {"title": (ph.get("description") or ph.get("alt_description") or "Untitled").strip()[:120],
+                             "artist": user, "date": (ph.get("created_at") or "")[:10],
+                             "credit": f"Photo by {user} on Unsplash", "museum": "Unsplash"}})
+    return out
+
+def fetch_modern(src, count, query, mat_rgb, placard=False, describe="off", qr=True, tone="whimsical",
+                 avoid=None, bias=None, googly_chance=0.0, googly_strict=0.5, fill=False, fill_tol=0.2,
+                 max_upscale=1.6, fill_mat=False):
+    """Fetch from one of MODERN_SOURCES and render like the museum fetchers do."""
+    os.makedirs(TMP, exist_ok=True); LAST_PIECES.clear()
+    avoid = avoid or set()
+    pool, finder = {"wikimedia": (WM_TERMS, wikimedia_candidates), "nasa": (NASA_TERMS, nasa_candidates),
+                    "unsplash": (UNSPLASH_TERMS, unsplash_candidates)}[src]
+    term = _search_term(query, bias, pool)
+    try:                                         # an API changing shape must mean "try another
+        cands = finder(term)                     # source", not a failed run
+    except Exception as e:
+        print(f"  ! {src}: {str(e)[:120]}", file=sys.stderr)
+        cands = []
+    print(f"  {src}: {term or 'anything'} — {len(cands)} candidate(s)")
+    random.shuffle(cands)
+    tw, th = fill_target(placard)
+    paths, failed = [], 0
+    for c in cands:
+        if len(paths) >= count or failed >= MAX_FAILED_DOWNLOADS:
+            break
+        if c["id"] in avoid:
+            continue
+        meta, title = c["meta"], (c["meta"].get("title") or "?")[:40]
+        try:
+            w, h = float(c.get("w") or 0), float(c.get("h") or 0)
+        except (TypeError, ValueError):
+            w = h = 0.0
+        if w and h:                              # screen on the listed size before downloading
+            hpf = fills_screen(w, h, tw, th, fill, fill_tol)
+            if (fill and not hpf and not fill_mat) or too_small(w, h, placard, hpf, max_upscale):
+                continue
+        art = download_image(c["img_url"])
+        if art is None:
+            failed += 1
+            continue
+        if src == "nasa" and is_grayscale(art):
+            print(f"  - black and white: {title}")
+            continue
+        pf = fills_screen(*art.size, tw, th, fill, fill_tol)
+        if fill and not pf and not fill_mat:
+            continue
+        if too_small(*art.size, placard, pf, max_upscale):
+            print(f"  - too small ({art.width}x{art.height}): {title}")
+            continue
+        p = os.path.join(TMP, f"{len(paths)+1:02d}_{slug(meta.get('title') or src)}.jpg")
+        caption_style, caption = _render_piece(art, meta, mat_rgb, p, placard, describe, qr, tone,
+                                               c["page_url"], real_text=c.get("real_text"),
+                                               googly_chance=googly_chance, googly_strict=googly_strict, fill=pf)
+        if c.get("on_use"):
+            try:
+                c["on_use"]()
+            except Exception:
+                pass
+        paths.append(p)
+        LAST_PIECES.append({"title": meta.get("title") or "", "artist": meta.get("artist") or "Unknown",
+                            "url": c["page_url"], "source": SOURCE_NAMES[src], "id": c["id"],
+                            "caption_style": caption_style or "", "caption": caption or "",
+                            "date": meta.get("date") or "", "medium": "", "dimensions": "",
+                            "credit": meta.get("credit") or "", "culture": ""})
+        print(f"  prepped: {meta.get('title')} — {meta.get('artist') or 'Unknown'}")
+    return paths
+
 def prep_local(files, mat_rgb, googly_chance=0.0, googly_strict=0.5, fill=False, fill_tol=1.0, fill_mat=False):
     os.makedirs(TMP, exist_ok=True)
     out = []
@@ -1448,13 +1754,21 @@ def _fetch_source(args, mat_rgb, count, relax=0, src=None):
     season/holiday/weather/on-this-day biases off (a bias term like an obscure
     'on this day' event can easily match nothing at a museum). `src` forces a museum."""
     avoid = {str(x) for x in _load_list(BLOCKLIST)} | {str(h.get("id")) for h in _load_list(HISTORY)[-40:]}
-    src = src or (random.choice(["met", "cleveland"]) if args.source == "any" else args.source)
+    src = src or pick_source(args.source)
     # Each bias mode is rolled once per run against its configured chance.
     seasonal    = not relax and _roll(args.seasonal_chance)
     holidays    = not relax and _roll(args.holidays_chance)
     weather     = not relax and _roll(args.weather_chance)
     on_this_day = not relax and _roll(args.on_this_day_chance)
-    if src == "cleveland":
+    if src in MODERN_SOURCES:
+        bias = bias_terms(args.subject, holidays, seasonal, args.hemisphere, weather, on_this_day,
+                          args.latitude, args.longitude)
+        if bias:
+            print(f"  bias: {'/'.join(bias)}")
+        paths = fetch_modern(src, count, args.query, mat_rgb, args.placard, args.describe, args.qr,
+                             args.tone, avoid, bias, args.googly_chance, args.googly_strict, args.fill,
+                             args.fill_tolerance, args.max_upscale, fill_mat=args.fill_mat)
+    elif src == "cleveland":
         paths = fetch_cleveland(count, args.query, mat_rgb, args.theme, args.placard,
                                 args.describe, args.types, args.qr, args.tone, avoid,
                                 seasonal, args.hemisphere, args.all_types, args.subject, holidays,
@@ -1478,9 +1792,9 @@ def _fetch_with_retries(args, mat_rgb, count):
     paths, src = _fetch_source(args, mat_rgb, count)
     if paths:
         return paths
-    other = "met" if src == "cleveland" else "cleveland"
+    other = SOURCE_FALLBACK.get(src, "met")
     steps = [("same search again, without season/holiday/weather/on-this-day terms", args, src),
-             (f"the other museum ({'the Met' if other == 'met' else 'Cleveland'})", args, other)]
+             (f"another source ({SOURCE_NAMES[other]})", args, other)]
     if args.query or args.subject or args.theme != "museum":
         loose = argparse.Namespace(**vars(args)); loose.query = None; loose.subject = ""; loose.theme = "museum"
         steps.append(("anything from the whole collection", loose, None))
@@ -1497,7 +1811,7 @@ def _fetch_with_retries(args, mat_rgb, count):
 FAV_CHANCE = 0.2   # chance a scheduled run re-shows a favourite instead of fresh art
 
 def _gather(args, mat_rgb, count):
-    """Fetch `count` matted images (files / Met / Cleveland / any), with favourites mixed in
+    """Fetch `count` rendered images (local files or any source), with favourites mixed in
     and used as a graceful fallback if fresh art can't be fetched. Preview and an explicit
     'change now' (--force) always fetch fresh; only automatic runs re-show favourites."""
     if args.files:
@@ -1662,8 +1976,10 @@ def main():
                     help="caption: off, the Met's real prose, or an invented tale (needs a key)")
     ap.add_argument("--qr", action=argparse.BooleanOptionalAction, default=cfg["qr"],
                     help="show a QR code linking to the real museum page (when a caption is shown)")
-    ap.add_argument("--source", choices=["met", "cleveland", "any"], default=cfg.get("source", "met"),
-                    help="art source: the Met, the Cleveland Museum, or a random pick each run")
+    ap.add_argument("--source", choices=SOURCE_CHOICES, default=cfg.get("source", "modern"),
+                    help="where art comes from: a museum (met, cleveland), a modern source (wikimedia, "
+                         "nasa, unsplash), or a mix picked at random each run (any = both museums, "
+                         "modern = the three modern ones, everything = all five)")
     _tone_default = cfg.get("tone") if isinstance(cfg.get("tone"), list) else [cfg.get("tone") or "whimsical"]
     ap.add_argument("--tone", default=_tone_default,
                     type=lambda s: [x.strip() for x in s.split(",") if x.strip() in TONES],

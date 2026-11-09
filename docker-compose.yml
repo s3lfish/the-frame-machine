@@ -8,6 +8,7 @@ services:
     network_mode: host          # required for TV discovery + Wake-on-LAN
     environment:
       - FRAME_MAC=${FRAME_MAC:-}
+      - UNSPLASH_ACCESS_KEY=${UNSPLASH_ACCESS_KEY:-}   # optional; or paste it into the panel
       - PYTHONUNBUFFERED=1
     volumes:
       - ${HOME}/.config/frame:/root/.config/frame   # persists token, config, key, history

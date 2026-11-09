@@ -106,6 +106,31 @@ else
   esac
 fi
 
+# 4c. Optional: Unsplash photography needs a free access key (Wikimedia and NASA don't).
+UKEYFILE="$CFG/unsplash_key.txt"
+if [ -s "$UKEYFILE" ]; then
+  echo "  ✓ Unsplash key already set — Unsplash photos enabled"
+else
+  echo
+  echo "  Modern art comes from Wikimedia and NASA with no setup. Unsplash (the best-looking"
+  echo "  photography) needs a free access key. You can skip and add it later in the panel."
+  printf "  Set one up now? [y/N] "; read -r WANTUKEY
+  case "$WANTUKEY" in
+    y|Y)
+      echo "    1. Open  https://unsplash.com/developers  and sign in (or sign up)."
+      echo "    2. Click 'New Application', accept the terms, name it, then copy its Access Key."
+      printf "    Paste the Access Key (it won't display): "; read -rs UKEY; echo
+      if [ -n "$UKEY" ]; then
+        (umask 077; printf '%s' "$UKEY" > "$UKEYFILE")
+        echo "  ✓ Key saved to $UKEYFILE — Unsplash photos enabled."
+      else
+        echo "  • No key entered — skipping. The modern mix uses Wikimedia and NASA."
+      fi ;;
+    *)
+      echo "  • Skipped. Add a key any time in the panel (Source → Unsplash access key)." ;;
+  esac
+fi
+
 # 5. Install the always-on control panel + note about scheduling
 PORT=8080
 OS="$(uname)"
