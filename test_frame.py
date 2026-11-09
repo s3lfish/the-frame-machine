@@ -36,11 +36,13 @@ class TempState(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="frame-test-")
         self._saved = {k: getattr(fp, k) for k in
                        ("CFG", "STATUS", "HISTORY", "BLOCKLIST", "FAVOURITES", "NAV",
-                        "CURRENT_IMG", "HIST_IMG_DIR", "FAVS_DIR", "CONFIG", "TMP")}
+                        "CURRENT_IMG", "HIST_IMG_DIR", "FAVS_DIR", "CONFIG", "TMP",
+                        "STATE", "PENDING_DELETE")}
         fp.CFG = os.path.join(self.tmp, "cfg")
         fp.TMP = os.path.join(self.tmp, "art")
         for name, leaf in (("STATUS", "status.json"), ("HISTORY", "history.json"),
                            ("BLOCKLIST", "blocklist.json"), ("FAVOURITES", "favourites.json"),
+                           ("STATE", "uploaded.json"), ("PENDING_DELETE", "pending_delete.json"),
                            ("NAV", "nav.json"), ("CURRENT_IMG", "current.jpg"),
                            ("CONFIG", "config.json")):
             setattr(fp, name, os.path.join(fp.CFG, leaf))
@@ -1973,6 +1975,83 @@ class TestShippedExamples(unittest.TestCase):
         args = line[line.index("--fetch"):].rstrip("`\n ").split()
         r = self._run(args + ["--mac", "a0:d0:5b:01:23:56"])
         self.assertEqual(r.returncode, 0, r.stderr[-400:])
+
+
+class TestBanRemovesFromTv(TempState):
+    """A ban used to only blocklist the id: the upload stayed among the newest pieces the
+    TV's own slideshow cycles, so a banned church kept coming back (2026-11-09)."""
+
+    def _history(self, *entries):
+        os.makedirs(fp.HIST_IMG_DIR, exist_ok=True)
+        hist = []
+        for pid, cid in entries:
+            f = os.path.join(fp.HIST_IMG_DIR, f"{cid}.jpg")
+            open(f, "wb").close()
+            hist.append({"id": pid, "content_id": cid, "title": pid, "file": f})
+        fp._save_list(fp.HISTORY, hist)
+
+    def test_ban_queues_the_upload_and_drops_history_and_favourite(self):
+        self._history(("nasa:1", "MY_F0001"), ("wm:2", "MY_F0002"), ("nasa:3", "MY_F0003"))
+        os.makedirs(fp.FAVS_DIR, exist_ok=True)
+        fav = os.path.join(fp.FAVS_DIR, "wm_2.jpg")
+        open(fav, "wb").close()
+        fp._save_list(fp.FAVOURITES, [{"id": "wm:2", "file": fav}])
+        queued = fp.ban_piece("wm:2", ["MY_F0002"])
+        self.assertEqual(queued, ["MY_F0002"])
+        self.assertEqual(fp._load_list(fp.BLOCKLIST), ["wm:2"])
+        self.assertEqual(fp._load_list(fp.PENDING_DELETE), ["MY_F0002"])
+        self.assertEqual([h["id"] for h in fp.history_navlist()], ["nasa:1", "nasa:3"])
+        self.assertEqual(fp.nav_get(), 1)
+        self.assertEqual(fp._load_list(fp.FAVOURITES), [])
+        self.assertFalse(os.path.exists(fav))
+
+    def test_purge_deletes_the_banned_upload_and_clears_the_queue(self):
+        fp._save_list(fp.PENDING_DELETE, ["MY_F0002"])
+        art = FakeArt(["MY_F0001", "MY_F0002", "MY_F0003", "SAM-S0011"])
+        self.assertEqual(fp.purge_banned(art), ["MY_F0002"])
+        self.assertEqual(sorted(i["content_id"] for i in art.items), ["MY_F0001", "MY_F0003", "SAM-S0011"])
+        self.assertEqual(fp._load_list(fp.PENDING_DELETE), [])
+
+    def test_a_ban_from_before_the_queue_is_found_through_history(self):
+        """The church was banned by id only; its upload is still found and removed."""
+        self._history(("wm:160021607", "MY_F2752"), ("nasa:PIA14873", "MY_F2753"))
+        fp._save_list(fp.BLOCKLIST, ["wm:160021607"])
+        art = FakeArt(["MY_F2751", "MY_F2752", "MY_F2753"])
+        fp.purge_banned(art)
+        self.assertEqual(sorted(i["content_id"] for i in art.items), ["MY_F2751", "MY_F2753"])
+
+    def test_an_upload_that_wont_delete_stays_queued(self):
+        fp._save_list(fp.PENDING_DELETE, ["MY_F0002"])
+        art = FakeArt(["MY_F0002"], refuse=["MY_F0002"], batch_raises=True)
+        self.assertEqual(fp.purge_banned(art), [])
+        self.assertEqual(fp._load_list(fp.PENDING_DELETE), ["MY_F0002"])
+
+    def test_an_unreachable_tv_keeps_the_queue_and_does_not_raise(self):
+        class Asleep:
+            def available(self, category=None):
+                raise TimeoutError("[Errno 60] Operation timed out")
+        fp._save_list(fp.PENDING_DELETE, ["MY_F0002"])
+        self.assertEqual(fp.purge_banned(Asleep()), [])
+        self.assertEqual(fp._load_list(fp.PENDING_DELETE), ["MY_F0002"])
+
+    def test_prune_never_spares_a_banned_upload_for_the_slideshow(self):
+        fp._save_list(fp.PENDING_DELETE, ["MY_F0004"])
+        art = FakeArt(["MY_F0001", "MY_F0002", "MY_F0003", "MY_F0004", "MY_F0005"])
+        fp.prune_uploads(art, keep=["MY_F0005"], recent=3)
+        self.assertEqual(sorted(i["content_id"] for i in art.items), ["MY_F0002", "MY_F0003", "MY_F0005"])
+
+    def test_panel_ban_queues_the_upload_on_the_tv(self):
+        fp.write_status(True, "Displayed X", {"id": "wm:9", "title": "X", "content_id": "MY_F0009"})
+        fp._save_list(fp.STATE, ["MY_F0009"])
+        client = app.app.test_client()
+
+        class Done:
+            returncode, stdout, stderr = 0, "", ""
+        with Patch(app, run_push=lambda *a, **k: (Done(), None)):
+            r = client.post("/ban")
+        self.assertTrue(r.get_json()["ok"])
+        self.assertEqual(fp._load_list(fp.BLOCKLIST), ["wm:9"])
+        self.assertEqual(fp._load_list(fp.PENDING_DELETE), ["MY_F0009"])
 
 
 if __name__ == "__main__":

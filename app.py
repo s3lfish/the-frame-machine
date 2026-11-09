@@ -392,15 +392,17 @@ def ban():
         return jsonify(ok=False,           # no-op, so don't change the art and pretend otherwise
                        message="Don't know which piece is on the TV, so there's nothing to ban. "
                                "Change the art once, then try again.")
-    bl = fp._load_list(fp.BLOCKLIST)
-    if pid not in bl:
-        bl.append(pid); fp._save_list(fp.BLOCKLIST, bl)
+    # the piece on the TV is the last upload (uploaded.json); a history-browse display
+    # records no content_id in status, so take both
+    cids = [_read_status().get("content_id")] + [str(c) for c in fp._load_list(fp.STATE)]
+    fp.ban_piece(pid, cids)
+    later = " Its copy on the TV is deleted as soon as the TV answers."
     r, err = run_push(["--force"] + flags_from(fp.load_config()), 300, "Finding a replacement")
     if err:
-        return jsonify(ok=False, message="Banned, but " + err[0].lower() + err[1:])
+        return jsonify(ok=False, message="Banned, but " + err[0].lower() + err[1:] + later)
     return jsonify(ok=(r.returncode == 0),
-                   message="Banned and replaced with something new." if r.returncode == 0
-                           else "Banned; the replacement failed: " + (r.stderr or "")[-160:])
+                   message="Banned and replaced with something new." + later if r.returncode == 0
+                           else "Banned; the replacement failed: " + (r.stderr or "")[-160:] + later)
 
 def _navigate(step):
     """Step back (-1) / forward (+1) through the saved history images."""

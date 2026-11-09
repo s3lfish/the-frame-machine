@@ -247,6 +247,7 @@ _TONE_WEIGHTS = None   # per-run override for made-up-voice weights (set from --
 STATUS = os.path.join(CFG, "status.json")   # last-run outcome, for alerts + the dashboard
 HISTORY = os.path.join(CFG, "history.json") # recently displayed pieces (for no-repeats + dashboard)
 BLOCKLIST = os.path.join(CFG, "blocklist.json")  # ids the user has banned
+PENDING_DELETE = os.path.join(CFG, "pending_delete.json")  # TV uploads of banned pieces still to remove
 CURRENT_IMG = os.path.join(CFG, "current.jpg")   # a copy of what's on the TV now (dashboard thumb)
 HIST_IMG_DIR = os.path.join(CFG, "history_imgs") # recent renders, kept so you can step back/forward
 NAV = os.path.join(CFG, "nav.json")              # where you currently are when browsing history
@@ -279,6 +280,46 @@ def _save_list(path, data):
         os.makedirs(CFG, exist_ok=True); json.dump(data, open(path, "w"))
     except Exception:
         pass
+
+def ban_piece(pid, content_ids=()):
+    """Never show `pid` again. Blocklisting alone only stops it being fetched: its upload
+    stays among the pieces the TV's own slideshow cycles, so it kept coming back (2026-11).
+    So also queue every TV upload of it for deletion (done on the next connection, since the
+    TV may be asleep) and drop it from the Back/Forward history and the favourites.
+    Returns the upload ids queued."""
+    pid = str(pid)
+    bl = _load_list(BLOCKLIST)
+    if pid not in bl:
+        bl.append(pid)
+        _save_list(BLOCKLIST, bl)
+    hist = _load_list(HISTORY)
+    cids = [str(c) for c in content_ids if c]
+    cids += [str(h["content_id"]) for h in hist if str(h.get("id")) == pid and h.get("content_id")]
+    cids = list(dict.fromkeys(cids))
+    pend = _load_list(PENDING_DELETE)
+    _save_list(PENDING_DELETE, list(dict.fromkeys([str(c) for c in pend] + cids)))
+    kept = [h for h in hist if str(h.get("id")) != pid]
+    if len(kept) != len(hist):
+        _save_list(HISTORY, kept)
+        nav_set(len(history_navlist()) - 1)          # indices shifted: back to the newest
+    favs = _load_list(FAVOURITES)
+    left = [f for f in favs if str(f.get("id")) != pid]
+    if len(left) != len(favs):
+        for f in favs:
+            if str(f.get("id")) == pid and f.get("file"):
+                try: os.remove(f["file"])
+                except OSError: pass
+        _save_list(FAVOURITES, left)
+    return cids
+
+def banned_upload_ids():
+    """TV uploads that have to go: the queue from ban_piece, plus any upload in history of a
+    banned piece (which also catches bans made before the queue existed)."""
+    banned = {str(x) for x in _load_list(BLOCKLIST)}
+    ids = [str(c) for c in _load_list(PENDING_DELETE)]
+    ids += [str(h["content_id"]) for h in _load_list(HISTORY)
+            if h.get("content_id") and str(h.get("id")) in banned]
+    return list(dict.fromkeys(i for i in ids if i))
 
 def migrate_config(saved):
     """Bring a saved config.json dict up to LAYOUT_VERSION in place. True if it changed."""
@@ -699,6 +740,41 @@ def _upload_no(cid):
     m = re.search(r"(\d+)$", cid)
     return int(m.group(1)) if m else -1
 
+def _delete_ids(art, ids, batch=20):
+    """Delete `ids` from the TV in batches, one at a time if a batch fails. Callers re-read
+    the TV's list to see what really went."""
+    ids = list(ids)
+    for i in range(0, len(ids), batch):
+        chunk = ids[i:i + batch]
+        try:
+            art.delete_list(chunk)
+        except Exception:
+            for cid in chunk:
+                try: art.delete(cid)
+                except Exception: pass
+
+def purge_banned(art, batch=20):
+    """Delete the TV uploads of banned pieces. Ones that wouldn't go stay queued for the next
+    run; ones already off the TV leave the queue. Never fails the push. Returns ids removed."""
+    want = banned_upload_ids()
+    if not want:
+        return []
+    try:
+        doomed = [c for c in want if c in set(user_upload_ids(art))]
+        _delete_ids(art, doomed, batch)
+        left = set(user_upload_ids(art)) if doomed else set()
+        _save_list(PENDING_DELETE, [str(c) for c in _load_list(PENDING_DELETE) if str(c) in left])
+        gone = [c for c in doomed if c not in left]
+        if gone:
+            print(f"Removed {len(gone)} banned upload(s) from the TV")
+        if left & set(doomed):
+            print(f"  ! {len(left & set(doomed))} banned upload(s) wouldn't delete, will retry next run",
+                  file=sys.stderr)
+        return gone
+    except Exception as e:
+        print(f"  ! banned uploads not removed yet: {str(e)[:120]}", file=sys.stderr)
+        return []
+
 def prune_uploads(art, keep, recent=1, batch=20):
     """After a replace push: delete every uploaded image except `keep` and the newest others
     up to `recent` in all (so the TV's own slideshow has a few to cycle through if this
@@ -708,16 +784,11 @@ def prune_uploads(art, keep, recent=1, batch=20):
     half-finished runs each overwrote that id, so 450+ old pieces built up in the rotation."""
     try:
         spare = max(0, recent - len(set(keep)))
+        banned = set(banned_upload_ids())        # never spared for the slideshow
         older = sorted((c for c in user_upload_ids(art) if c not in set(keep)), key=_upload_no, reverse=True)
-        old = older[spare:]
-        for i in range(0, len(old), batch):
-            chunk = old[i:i + batch]
-            try:
-                art.delete_list(chunk)
-            except Exception:
-                for cid in chunk:
-                    try: art.delete(cid)
-                    except Exception: pass
+        spared = set([c for c in older if c not in banned][:spare])
+        old = [c for c in older if c not in spared]
+        _delete_ids(art, old, batch)
         if old:
             stuck = [cid for cid in user_upload_ids(art) if cid in set(old)]
             print(f"Removed {len(old) - len(stuck)} older upload(s)"
@@ -1988,6 +2059,8 @@ def run(args):
     # --force (the panel's Change-now / back / forward buttons) still goes through.
     if not args.force and tv_in_use(art):
         return _maybe_watch(args, "The TV is being watched right now — leaving it alone.")
+
+    purge_banned(art)                        # before anything else, so a banned piece is gone
 
     print("Preparing images...")
     paths = _gather(args, mat_rgb, args.fetch)
