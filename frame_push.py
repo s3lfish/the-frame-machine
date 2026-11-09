@@ -237,6 +237,7 @@ DEFAULTS = {"mac": "", "ip": None, "description": "made-up", "content": "museum"
             "latitude": None, "longitude": None, "tone_weights": {},
             "watch_on_fail": True, "watch_interval": 60, "watch_timeout": 180,
             "fill": True, "fill_tolerance": 0.2, "fill_mat": True, "max_upscale": 1.6,
+            "exclude_terms": ["church", "temple", "cathedral", "mosque", "protest", "homeless", "portrait"],
             "layout_version": 2}
 # layout_version 2 (2026-11): fullscreen by default. A config saved before it is moved over
 # once: label off, smart fill on a blurred backdrop, and modern sources instead of museums.
@@ -1452,13 +1453,16 @@ def fetch_cleveland(count, query, mat_rgb, theme=None, placard=False, describe="
 # Museum open access is almost all pre-1929 (that's what public domain means). These three
 # are recent, high-resolution and free to display at home: Commons featured pictures (CC
 # licences, mostly modern photography), NASA's image library (US-government work, public
-# domain) and Unsplash (Unsplash Licence; needs a free access key). Genres and object types
-# are museum ideas and don't apply here; a query, subject or spice-mode term still does.
+# domain) and Unsplash (Unsplash Licence; needs a free access key). Genres, object types and
+# the season/holiday/weather/on-this-day biases are museum ideas and don't apply here: those
+# biases turned "grey sky" into street photography and "1880 Zagreb earthquake" into nothing.
+# A modern source searches its own curated terms below, or the user's query or subject.
 MUSEUM_SOURCES = ("met", "cleveland")
 MODERN_SOURCES = ("wikimedia", "nasa", "unsplash")
 SOURCE_POOLS = {"any": MUSEUM_SOURCES, "modern": MODERN_SOURCES,
                 "everything": MUSEUM_SOURCES + MODERN_SOURCES}
-SOURCE_CHOICES = MUSEUM_SOURCES + MODERN_SOURCES + tuple(SOURCE_POOLS)
+FAVOURITES_SOURCE = "favourites"        # curated only: cycle through the saved favourites
+SOURCE_CHOICES = MUSEUM_SOURCES + MODERN_SOURCES + tuple(SOURCE_POOLS) + (FAVOURITES_SOURCE,)
 # Where a retry goes when a source comes back empty (or, for Unsplash, has no key).
 SOURCE_FALLBACK = {"met": "cleveland", "cleveland": "met", "wikimedia": "nasa",
                    "nasa": "wikimedia", "unsplash": "wikimedia"}
@@ -1478,6 +1482,9 @@ NASA_TERMS = ["nebula", "galaxy", "Hubble", "Webb NIRCam", "aurora", "star clust
 # NASA's library is half press photos: launches, briefings, people in clean rooms. Those come
 # from these centres; the science imagery comes from JPL, Goddard, STScI and the station (JSC).
 NASA_SKIP_CENTRES = {"KSC", "HQ", "MSFC", "ARC", "AFRC", "GRC", "LARC", "SSC"}
+# Charts and labelled comparisons look like a slide on the wall, not a picture.
+NASA_SKIP_TITLE = re.compile(r"\b(illustration|infographic|diagram|chart|graph|map|poster|"
+                             r"comparison|timeline|labell?ed|annotated)s?\b", re.I)
 MAX_FAILED_DOWNLOADS = 5                # then give up on the source: a 429 isn't worth hammering
 UNSPLASH_API = "https://api.unsplash.com/photos/random"
 UNSPLASH_TERMS = ["landscape", "mountains", "ocean", "forest", "architecture", "abstract",
@@ -1553,15 +1560,32 @@ def _wm_title(name, file_title):
         name = m.group(1).strip() if m else ""
     return name or re.sub(r"^File:|\.\w+$", "", file_title or "") or "Untitled"
 
-def wikimedia_candidates(term):
+WM_MAX_QUERY = 300                      # CirrusSearch rejects longer search strings
+
+def _quote_term(t):
+    t = re.sub(r'["\\]', "", t).strip()
+    return f'"{t}"' if " " in t else t
+
+def wikimedia_query(term, exclude=()):
+    """The Commons search string: `term` inside Featured pictures, without paintings and old
+    prints (the museums' job), and without anything mentioning an excluded word. Exclusions
+    that would push the query past CirrusSearch's length limit are dropped from the end."""
+    q = f'{term} -painting -"oil on canvas" -engraving' if term else '-painting -"oil on canvas" -engraving'
+    tail = f" incategory:{WM_FEATURED}"
+    for t in exclude:
+        neg = f" -{_quote_term(t)}"
+        if len(neg) > 2 and len(q) + len(neg) + len(tail) <= WM_MAX_QUERY:
+            q += neg
+    return q + tail
+
+def wikimedia_candidates(term, exclude=()):
     """Candidates from a search for `term` inside Commons' Featured pictures. A random offset
     into the results (falling back to the top) keeps the same term from repeating itself."""
     params = {"action": "query", "format": "json", "prop": "imageinfo",
               "iiprop": "url|size|mime|extmetadata", "iiurlwidth": str(CANVAS[0]),
               "iiextmetadatafilter": "Artist|LicenseShortName|ImageDescription|DateTimeOriginal|ObjectName",
               "generator": "search", "gsrnamespace": "6", "gsrlimit": "50",
-              # featured paintings and old prints are the museums' job; keep this one modern
-              "gsrsearch": f'{term} -painting -"oil on canvas" -engraving incategory:{WM_FEATURED}'}
+              "gsrsearch": wikimedia_query(term, exclude)}
     pages = {}
     for offset in dict.fromkeys((random.choice((0, 50, 100)), 0)):
         pages = (met_json(WM_API, params={**params, "gsroffset": str(offset)}).get("query") or {}).get("pages") or {}
@@ -1586,7 +1610,7 @@ def wikimedia_candidates(term):
                              "credit": val("LicenseShortName"), "museum": "Wikimedia Commons"}})
     return out
 
-def nasa_candidates(term):
+def nasa_candidates(term, exclude=()):
     """Candidates from NASA's image library for `term`, from a random page of its hits.
     Each hit lists its original's pixel size, so small ones are skipped unseen."""
     def page(n):
@@ -1599,7 +1623,7 @@ def nasa_candidates(term):
     out = []
     for it in col.get("items") or []:
         d = (it.get("data") or [{}])[0]
-        if (d.get("center") or "").upper() in NASA_SKIP_CENTRES:
+        if (d.get("center") or "").upper() in NASA_SKIP_CENTRES or NASA_SKIP_TITLE.search(d.get("title") or ""):
             continue
         orig = next((l for l in it.get("links") or [] if l.get("rel") == "canonical"), None)
         if not orig or not re.search(r"\.(jpe?g|png)$", orig.get("href") or "", re.I):
@@ -1614,7 +1638,7 @@ def nasa_candidates(term):
                              "date": (d.get("date_created") or "")[:10], "credit": "NASA", "museum": "NASA"}})
     return out
 
-def unsplash_candidates(term):
+def unsplash_candidates(term, exclude=()):
     """Candidates from Unsplash's random endpoint (30 landscape photos, safe-search high).
     Using one has to ping its download_location, per Unsplash's API guidelines."""
     key = unsplash_key()
@@ -1653,28 +1677,57 @@ def unsplash_candidates(term):
                              "credit": f"Photo by {user} on Unsplash", "museum": "Unsplash"}})
     return out
 
+def active_exclusions(exclude, term):
+    """The exclusion words that apply to a search for `term`: a word the user is asking for
+    ('cathedral' typed as the subject) is not also left out."""
+    t = (term or "").lower()
+    return [x.strip() for x in exclude or () if x and x.strip() and x.strip().lower() not in t]
+
+def is_excluded(title, exclude):
+    """True if `title` names an excluded word (whole word, plural too: 'temples', 'churches')."""
+    return any(re.search(rf"\b{re.escape(x)}(e?s)?\b", title or "", re.I) for x in exclude)
+
+def fit_rank(w, h, tw, th, fill_tol):
+    """Sort key putting screen-shaped candidates first: 0 = fills tw x th within fill_tol,
+    1 = size unknown, 2 = would sit on the backdrop. Most Commons and NASA hits are portrait
+    or square, so without this a shuffle usually picked one of those."""
+    try:
+        w, h = float(w or 0), float(h or 0)
+    except (TypeError, ValueError):
+        return 1
+    if not w or not h:
+        return 1
+    return 0 if crop_loss(w, h, tw, th) <= fill_tol else 2
+
 def fetch_modern(src, count, query, mat_rgb, placard=False, describe="off", qr=True, tone="whimsical",
                  avoid=None, bias=None, googly_chance=0.0, googly_strict=0.5, fill=False, fill_tol=0.2,
-                 max_upscale=1.6, fill_mat=False):
-    """Fetch from one of MODERN_SOURCES and render like the museum fetchers do."""
+                 max_upscale=1.6, fill_mat=False, exclude=()):
+    """Fetch from one of MODERN_SOURCES and render like the museum fetchers do. `exclude` is a
+    list of words to leave out: negated in the Wikimedia search, and matched against every
+    source's titles."""
     os.makedirs(TMP, exist_ok=True); LAST_PIECES.clear()
     avoid = avoid or set()
     pool, finder = {"wikimedia": (WM_TERMS, wikimedia_candidates), "nasa": (NASA_TERMS, nasa_candidates),
                     "unsplash": (UNSPLASH_TERMS, unsplash_candidates)}[src]
     term = _search_term(query, bias, pool)
+    exclude = active_exclusions(exclude, term)
     try:                                         # an API changing shape must mean "try another
-        cands = finder(term)                     # source", not a failed run
+        cands = finder(term, exclude)            # source", not a failed run
     except Exception as e:
         print(f"  ! {src}: {str(e)[:120]}", file=sys.stderr)
         cands = []
     print(f"  {src}: {term or 'anything'} — {len(cands)} candidate(s)")
-    random.shuffle(cands)
     tw, th = fill_target(placard)
+    random.shuffle(cands)                        # stable sort: still random within each rank
+    cands.sort(key=lambda c: fit_rank(c.get("w"), c.get("h"), tw, th, fill_tol))
     paths, failed = [], 0
     for c in cands:
         if len(paths) >= count or failed >= MAX_FAILED_DOWNLOADS:
             break
         if c["id"] in avoid:
+            continue
+        if is_excluded(c["meta"].get("title"), exclude):
+            print(f"  - excluded: {(c['meta'].get('title') or '?')[:40]}")
             continue
         meta, title = c["meta"], (c["meta"].get("title") or "?")[:40]
         try:
@@ -1743,12 +1796,19 @@ def notify(msg):
         pass
 
 # ---------- main ----------
-def favourite_pick():
-    """A random saved favourite image path (and set it as the 'prepped' piece), or None."""
+def favourite_pick(cycle=False):
+    """A saved favourite image path (and set it as the 'prepped' piece), or None. Random, or
+    with cycle=True the one shown longest ago (never-shown first), so 'favourites only' works
+    through them all before repeating."""
     favs = [f for f in _load_list(FAVOURITES) if os.path.exists(f.get("file", ""))]
     if not favs:
         return None
-    fav = random.choice(favs)
+    if cycle:
+        last = {str(h.get("id")): i for i, h in enumerate(_load_list(HISTORY))}
+        random.shuffle(favs)                    # ties (never shown) in random order
+        fav = min(favs, key=lambda f: last.get(str(f.get("id")), -1))
+    else:
+        fav = random.choice(favs)
     LAST_PIECES.clear()
     LAST_PIECES.append({k: fav.get(k, "") for k in ("title", "artist", "url", "source", "id")})
     return fav["file"]
@@ -1769,13 +1829,14 @@ def _fetch_source(args, mat_rgb, count, relax=0, src=None):
     weather     = not relax and _roll(args.weather_chance)
     on_this_day = not relax and _roll(args.on_this_day_chance)
     if src in MODERN_SOURCES:
-        bias = bias_terms(args.subject, holidays, seasonal, args.hemisphere, weather, on_this_day,
-                          args.latitude, args.longitude)
+        # Only the subject carries over: the date/weather biases are for museum collections.
+        bias = bias_terms(args.subject)
         if bias:
-            print(f"  bias: {'/'.join(bias)}")
+            print(f"  subject: {'/'.join(bias)}")
         paths = fetch_modern(src, count, args.query, mat_rgb, args.placard, args.describe, args.qr,
                              args.tone, avoid, bias, args.googly_chance, args.googly_strict, args.fill,
-                             args.fill_tolerance, args.max_upscale, fill_mat=args.fill_mat)
+                             args.fill_tolerance, args.max_upscale, fill_mat=args.fill_mat,
+                             exclude=getattr(args, "exclude", ()))
     elif src == "cleveland":
         paths = fetch_cleveland(count, args.query, mat_rgb, args.theme, args.placard,
                                 args.describe, args.types, args.qr, args.tone, avoid,
@@ -1825,6 +1886,12 @@ def _gather(args, mat_rgb, count):
     if args.files:
         return prep_local(args.files, mat_rgb, args.googly_chance, args.googly_strict, args.fill,
                           args.fill_tolerance, args.fill_mat)
+    if args.source == FAVOURITES_SOURCE:
+        fav = favourite_pick(cycle=True)
+        if fav:
+            print("  ★ favourites only"); return [fav]
+        print("  favourites only, but none are saved yet — using the modern mix")
+        args = argparse.Namespace(**vars(args)); args.source = "modern"
     if not args.preview and not args.force and random.random() < FAV_CHANCE:
         fav = favourite_pick()
         if fav:
@@ -1986,8 +2053,14 @@ def main():
                     help="show a QR code linking to the real museum page (when a caption is shown)")
     ap.add_argument("--source", choices=SOURCE_CHOICES, default=cfg.get("source", "modern"),
                     help="where art comes from: a museum (met, cleveland), a modern source (wikimedia, "
-                         "nasa, unsplash), or a mix picked at random each run (any = both museums, "
-                         "modern = the three modern ones, everything = all five)")
+                         "nasa, unsplash), a mix picked at random each run (any = both museums, "
+                         "modern = the three modern ones, everything = all five), or favourites "
+                         "(only your saved favourites, in turn)")
+    _excl = cfg.get("exclude_terms")
+    ap.add_argument("--exclude", default=_excl if isinstance(_excl, list) else [],
+                    type=lambda s: [x.strip() for x in s.split(",") if x.strip()],
+                    help="comma-separated words a modern source leaves out, e.g. 'church,protest' "
+                         "('' for none)")
     _tone_default = cfg.get("tone") if isinstance(cfg.get("tone"), list) else [cfg.get("tone") or "whimsical"]
     ap.add_argument("--tone", default=_tone_default,
                     type=lambda s: [x.strip() for x in s.split(",") if x.strip() in TONES],

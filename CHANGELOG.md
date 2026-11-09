@@ -13,8 +13,27 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   label is off by default. **An existing config is moved over once** (label off, smart
   fill on the blurred backdrop, and a museum source switched to the modern mix); pick a
   museum again in the panel to go back. (2026-11-09)
+- **Modern sources ignore the season/holiday/weather/on-this-day modes.** Those were built
+  for museum collections. With them at *Sometimes*, nearly every modern run searched a bias
+  term instead of the curated scenery list: "grey sky" found a grim street photo and
+  "1880 Zagreb earthquake" found nothing at NASA. Wikimedia, NASA and Unsplash now search
+  their own terms, or your typed subject. Museums still use all four modes. (2026-11-09)
+- **Screen-shaped pictures first.** Most Commons and NASA hits are portrait or square, so a
+  modern run usually landed on the blurred backdrop. Candidates that fill the screen within
+  the fill tolerance are now tried first; the backdrop is used only when none of them
+  fits. (2026-11-09)
+- **No NASA charts.** NASA hits titled as an illustration, infographic, diagram, chart, map
+  or labelled comparison are skipped: they look like a slide on the wall. (2026-11-09)
 
 ### Added
+- **Leave out pictures of…** A list of words a modern source skips (default: church, temple,
+  cathedral, mosque, protest, homeless, portrait). They're negated in the Wikimedia search,
+  and every source's titles are checked against them. A word you type as the subject is
+  never excluded. Edit it in the panel, `exclude_terms` in config.json, or `--exclude`
+  (`--exclude ""` for none). (2026-11-09)
+- **Favourites only** source (`--source favourites`): shows only the pieces you've ♥'d,
+  each in turn, starting with the one shown longest ago. With none saved yet it uses the
+  modern mix. (2026-11-09)
 - Sources `wikimedia`, `nasa`, `unsplash`, `modern` (those three) and `everything`
   (museums + modern). Wikimedia and NASA are keyless; Unsplash needs a free access key,
   entered in the panel or the installer and kept in `~/.config/frame/unsplash_key.txt`
@@ -22,6 +41,11 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   Wikimedia searches stick to scenery and leave out scanned paintings. (2026-11-09)
 
 ### Fixed
+- **Re-running the installer keeps the panel's port.** `install.sh` always wrote port
+  8080 into the panel's launchd/systemd service, so a re-run could move a panel that had
+  been set to another port onto one something else already uses. It now keeps the port
+  the installed service already has; a first install uses 8080, and `PORT=8137 ./install.sh`
+  picks one. (2026-11-09)
 - **No more blurry blow-ups.** Some museum "original" scans are tiny (one was 750px
   wide) and were being enlarged 4-5x to fill a 4K screen. Any picture that would need
   enlarging more than 1.6x in the current layout is now skipped (`--max-upscale`,

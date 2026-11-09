@@ -750,6 +750,15 @@ class TestNasaCandidates(unittest.TestCase):
         self.assertEqual((out[0]["w"], out[0]["h"]), (6000, 4000))
         self.assertEqual(out[0]["page_url"], "https://images.nasa.gov/details/PIA1")
 
+    def test_charts_and_labelled_illustrations_are_dropped(self):
+        items = [self._item("PIA1", "JPL"), self._item("PIA2", "JPL"), self._item("PIA3", "GSFC")]
+        items[1]["data"][0]["title"] = "Flattening of Brown Dwarf, Jupiter and Saturn (Illustration)"
+        items[2]["data"][0]["title"] = "Mimas Global Map - June 2017"
+        def fake(url, params=None, timeout=30):
+            return {"collection": {"metadata": {"total_hits": len(items)}, "items": items}}
+        with Patch(fp, met_json=fake):
+            self.assertEqual([c["id"] for c in fp.nasa_candidates("saturn")], ["nasa:PIA1"])
+
     def test_grayscale_detection(self):
         self.assertTrue(fp.is_grayscale(Image.new("RGB", (100, 100), (120, 120, 120))))
         self.assertFalse(fp.is_grayscale(Image.new("RGB", (100, 100), (200, 60, 40))))
@@ -827,7 +836,7 @@ class TestFetchModern(TempState):
     def test_renders_records_and_calls_on_use(self):
         used = []
         cands = [self._cand("nasa:1", on_use=lambda: used.append(1))]
-        with Patch(fp, nasa_candidates=lambda term: cands,
+        with Patch(fp, nasa_candidates=lambda term, exclude=(): cands,
                    download_image=lambda url, headers=None: Image.new("RGB", (6000, 4000), (200, 60, 40))):
             paths = fp.fetch_modern("nasa", 1, None, None, fill=True, fill_mat=True)
         self.assertEqual(len(paths), 1)
@@ -838,7 +847,7 @@ class TestFetchModern(TempState):
 
     def test_small_listed_images_are_never_downloaded(self):
         fetched = []
-        with Patch(fp, wikimedia_candidates=lambda term: [self._cand("wm:1", 800, 600)],
+        with Patch(fp, wikimedia_candidates=lambda term, exclude=(): [self._cand("wm:1", 800, 600)],
                    download_image=lambda url, headers=None: fetched.append(url)):
             self.assertEqual(fp.fetch_modern("wikimedia", 1, None, None, fill=True, fill_mat=True), [])
         self.assertEqual(fetched, [])
@@ -846,14 +855,14 @@ class TestFetchModern(TempState):
     def test_gives_up_after_repeated_failed_downloads(self):
         tries = []
         cands = [self._cand(f"wm:{i}") for i in range(20)]
-        with Patch(fp, wikimedia_candidates=lambda term: cands,
+        with Patch(fp, wikimedia_candidates=lambda term, exclude=(): cands,
                    download_image=lambda url, headers=None: tries.append(url)):
             fp.fetch_modern("wikimedia", 1, None, None)
         self.assertEqual(len(tries), fp.MAX_FAILED_DOWNLOADS)
 
     def test_banned_and_recent_pieces_are_avoided(self):
         fetched = []
-        with Patch(fp, nasa_candidates=lambda term: [self._cand("nasa:1")],
+        with Patch(fp, nasa_candidates=lambda term, exclude=(): [self._cand("nasa:1")],
                    download_image=lambda url, headers=None: fetched.append(url)):
             fp.fetch_modern("nasa", 1, None, None, avoid={"nasa:1"})
         self.assertEqual(fetched, [])
@@ -865,10 +874,221 @@ class TestFetchModern(TempState):
             self.assertEqual(fp.fetch_modern("nasa", 1, None, None), [])
 
     def test_black_and_white_nasa_frames_are_skipped(self):
-        with Patch(fp, nasa_candidates=lambda term: [self._cand("nasa:1")],
+        with Patch(fp, nasa_candidates=lambda term, exclude=(): [self._cand("nasa:1")],
                    download_image=lambda url, headers=None: Image.new("RGB", (6000, 4000), (90, 90, 90))):
             self.assertEqual(fp.fetch_modern("nasa", 1, None, None), [])
 
+
+def _run_args(**kw):
+    """The argparse fields _fetch_source/_gather read, with every spice mode switched on."""
+    base = dict(source="wikimedia", query=None, subject="", theme="museum", types=[], all_types=True,
+                seasonal_chance=1.0, holidays_chance=1.0, weather_chance=1.0, on_this_day_chance=1.0,
+                hemisphere="north", latitude=None, longitude=None, placard=False, describe="off",
+                qr=True, tone=["whimsical"], googly_chance=0.0, googly_strict=0.5, fill=True,
+                fill_tolerance=0.2, max_upscale=1.6, fill_mat=True, exclude=["church"],
+                files=None, preview="/tmp/x.jpg", force=False)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+class TestModernSourcesSkipMuseumBiases(TempState):
+    """Bug: with the spice modes at 'Sometimes', ~94% of modern runs searched a bias term
+    instead of the curated list: 'grey sky' found a street photo, '1880 Zagreb earthquake'
+    found nothing at NASA."""
+
+    def _fetch(self, **kw):
+        seen = {}
+        def fake_modern(src, count, query, mat_rgb, *a, **k):
+            seen["bias"], seen["exclude"] = a[5], k.get("exclude")
+            return []
+        def boom(*a, **k):
+            raise AssertionError("a museum bias was looked up for a modern source")
+        with Patch(fp, fetch_modern=fake_modern, holiday_terms=boom, seasonal_terms=boom,
+                   weather_terms=boom, on_this_day_terms=boom):
+            fp._fetch_source(_run_args(**kw), None, 1)
+        return seen
+
+    def test_no_bias_term_reaches_a_modern_source(self):
+        for src in fp.MODERN_SOURCES:
+            with self.subTest(src=src):
+                self.assertIsNone(self._fetch(source=src)["bias"])
+
+    def test_the_typed_subject_still_does(self):
+        self.assertEqual(self._fetch(subject=" lighthouse ")["bias"], ["lighthouse"])
+
+    def test_the_exclusions_are_passed_through(self):
+        self.assertEqual(self._fetch()["exclude"], ["church"])
+
+    def test_museums_keep_their_biases(self):
+        seen = []
+        with Patch(fp, fetch_matted=lambda *a, **k: seen.append(a[14]) or [],
+                   holiday_terms=lambda: ["christmas"]):
+            fp._fetch_source(_run_args(source="met", seasonal_chance=0, weather_chance=0,
+                                       on_this_day_chance=0), None, 1)
+        self.assertEqual(seen, [True])           # holidays rolled on for the museum
+
+
+class TestScreenShapedFirst(TempState):
+    """Most Commons and NASA hits are portrait or square, so a plain shuffle usually put the
+    piece on the blurred backdrop even when a 16:9 one was in the same results."""
+
+    def _cand(self, cid, w, h, title=None):
+        return {"id": cid, "img_url": f"https://x/{cid}.jpg", "w": w, "h": h, "page_url": "",
+                "real_text": "", "meta": {"title": title or cid, "artist": "A", "date": "", "credit": ""}}
+
+    def _pick(self, cands, **kw):
+        fetched = []
+        def dl(url, headers=None):
+            fetched.append(url)
+            c = next(c for c in cands if c["img_url"] == url)
+            return Image.new("RGB", (c["w"], c["h"]), (200, 60, 40))
+        with Patch(fp, wikimedia_candidates=lambda term, exclude=(): list(cands), download_image=dl):
+            paths = fp.fetch_modern("wikimedia", 1, None, None, fill=True, fill_mat=True, **kw)
+        return paths, fetched
+
+    def test_fit_rank(self):
+        tw, th = fp.CANVAS
+        self.assertEqual(fp.fit_rank(3840, 2160, tw, th, 0.2), 0)
+        self.assertEqual(fp.fit_rank(4000, 3000, tw, th, 0.2), 2)   # 4:3 loses 25%
+        self.assertEqual(fp.fit_rank(None, 2000, tw, th, 0.2), 1)
+        self.assertEqual(fp.fit_rank("x", 2000, tw, th, 0.2), 1)
+
+    def test_a_screen_shaped_candidate_beats_portraits_and_squares(self):
+        cands = [self._cand(f"wm:p{i}", 4000, 6000) for i in range(10)] + \
+                [self._cand(f"wm:s{i}", 5000, 5000) for i in range(10)] + [self._cand("wm:wide", 6000, 3400)]
+        for _ in range(5):
+            paths, fetched = self._pick(cands)
+            self.assertEqual(fetched, ["https://x/wm:wide.jpg"])
+            self.assertEqual(fp.LAST_PIECES[0]["id"], "wm:wide")
+
+    def test_the_backdrop_is_still_used_when_nothing_fits(self):
+        paths, fetched = self._pick([self._cand("wm:p", 4000, 6000)])
+        self.assertEqual(len(paths), 1)
+        self.assertEqual(Image.open(paths[0]).size, fp.CANVAS)
+
+
+class TestExclusions(TempState):
+    def test_the_wikimedia_query_negates_each_word(self):
+        q = fp.wikimedia_query("coast", ["church", "street art", 'say "x"'])
+        self.assertTrue(q.startswith("coast -painting"))
+        self.assertIn(" -church", q)
+        self.assertIn(' -"street art"', q)
+        self.assertIn(" -say x", q.replace('"', ""))
+        self.assertTrue(q.endswith(f"incategory:{fp.WM_FEATURED}"))
+
+    def test_the_query_stays_under_the_search_limit(self):
+        q = fp.wikimedia_query("coast", [f"word{i}" for i in range(200)])
+        self.assertLessEqual(len(q), fp.WM_MAX_QUERY)
+        self.assertTrue(q.endswith(f"incategory:{fp.WM_FEATURED}"))
+
+    def test_the_default_list_reaches_the_search(self):
+        calls = []
+        def fake(url, params=None, timeout=30):
+            calls.append(params["gsrsearch"]); return {}
+        with Patch(fp, met_json=fake, download_image=lambda *a, **k: None):
+            fp.fetch_modern("wikimedia", 1, "lake", None, exclude=fp.DEFAULTS["exclude_terms"])
+        for word in ("church", "temple", "mosque", "protest", "homeless", "portrait"):
+            self.assertIn(f" -{word}", calls[0])
+
+    def test_a_word_the_user_asks_for_is_not_excluded(self):
+        self.assertEqual(fp.active_exclusions(["Cathedral", " ", "protest"], "gothic cathedral"), ["protest"])
+
+    def test_titles_are_matched_on_whole_words_and_plurals(self):
+        ex = ["temple", "church"]
+        self.assertTrue(fp.is_excluded("Salt Lake Temple at dusk", ex))
+        self.assertTrue(fp.is_excluded("Two churches", ex))
+        self.assertFalse(fp.is_excluded("Templeton Lake", ex))
+        self.assertFalse(fp.is_excluded("", ex))
+
+    def test_an_excluded_title_is_never_downloaded(self):
+        fetched = []
+        cand = {"id": "nasa:1", "img_url": "u", "w": 6000, "h": 3400, "page_url": "", "real_text": "",
+                "meta": {"title": "Protest outside the gate"}}
+        with Patch(fp, nasa_candidates=lambda term, exclude=(): [cand],
+                   download_image=lambda url, headers=None: fetched.append(url)):
+            self.assertEqual(fp.fetch_modern("nasa", 1, None, None, exclude=["protest"]), [])
+        self.assertEqual(fetched, [])
+
+    def test_the_panel_sends_the_list_and_an_empty_one_means_none(self):
+        f = app.flags_from(dict(fp.DEFAULTS, exclude_terms=["church", "street, art"]))
+        self.assertEqual(f[f.index("--exclude") + 1], "church,street  art")
+        f = app.flags_from(dict(fp.DEFAULTS, exclude_terms=[]))
+        self.assertEqual(f[f.index("--exclude") + 1], "")
+        self.assertIn('id="exclude_terms"', app.PAGE)
+
+
+class TestFavouritesOnly(TempState):
+    def _fav(self, fid):
+        path = os.path.join(self.tmp, fid + ".jpg")
+        Image.new("RGB", fp.CANVAS).save(path)
+        return {"id": fid, "title": fid, "artist": "", "url": "", "source": "", "file": path}
+
+    def test_cycles_through_them_never_shown_first_then_oldest(self):
+        fp._save_list(fp.FAVOURITES, [self._fav("a"), self._fav("b"), self._fav("c")])
+        fp._save_list(fp.HISTORY, [{"id": "b"}, {"id": "x"}, {"id": "a"}])
+        self.assertTrue(fp.favourite_pick(cycle=True).endswith("c.jpg"))
+        fp._save_list(fp.HISTORY, [{"id": "b"}, {"id": "a"}, {"id": "c"}])
+        self.assertTrue(fp.favourite_pick(cycle=True).endswith("b.jpg"))
+        self.assertEqual(fp.LAST_PIECES[0]["id"], "b")
+
+    def test_the_source_shows_a_favourite_even_in_preview(self):
+        fp._save_list(fp.FAVOURITES, [self._fav("a")])
+        with Patch(fp, _fetch_with_retries=lambda *a: self.fail("fetched fresh art")):
+            out = fp._gather(_run_args(source="favourites"), None, 1)
+        self.assertTrue(out[0].endswith("a.jpg"))
+
+    def test_with_none_saved_it_falls_back_to_the_modern_mix(self):
+        seen = []
+        with Patch(fp, _fetch_with_retries=lambda args, m, c: seen.append(args.source) or ["p"]):
+            self.assertEqual(fp._gather(_run_args(source="favourites"), None, 1), ["p"])
+        self.assertEqual(seen, ["modern"])
+
+    def test_the_panel_and_the_pusher_both_offer_it(self):
+        self.assertIn("favourites", fp.SOURCE_CHOICES)
+        self.assertIn('value="favourites"', app.PAGE)
+
+
+class TestInstallerPort(unittest.TestCase):
+    """Bug: install.sh hard-coded PORT=8080 and rewrote the panel's service with it, so a
+    re-run moved a panel on 8137 onto a port a Docker container already had."""
+
+    def _saved_port(self, home):
+        import re, subprocess, sys
+        with open(os.path.join(HERE, "install.sh")) as f:
+            fn = re.search(r"^saved_port\(\) \{.*?^\}$", f.read(), re.S | re.M).group(0)
+        r = subprocess.run(["bash", "-c", fn + "\nsaved_port"], capture_output=True, text=True,
+                           env={"HOME": home, "PY": sys.executable, "PATH": os.environ["PATH"]}, timeout=30)
+        return r.stdout.strip()
+
+    def test_keeps_the_port_from_an_installed_launch_agent(self):
+        import plistlib
+        home = tempfile.mkdtemp()
+        os.makedirs(os.path.join(home, "Library/LaunchAgents"))
+        with open(os.path.join(home, "Library/LaunchAgents/com.frameart.gui.plist"), "wb") as f:
+            plistlib.dump({"Label": "com.frameart.gui",
+                           "ProgramArguments": ["/usr/bin/python3", "/x/app.py", "--port", "8137"]}, f)
+        self.assertEqual(self._saved_port(home), "8137")
+
+    def test_keeps_the_port_from_an_installed_systemd_unit(self):
+        home = tempfile.mkdtemp()
+        os.makedirs(os.path.join(home, ".config/systemd/user"))
+        with open(os.path.join(home, ".config/systemd/user/frameart-gui.service"), "w") as f:
+            f.write("[Service]\nExecStart=/usr/bin/python3 /x/app.py --port 9000\n")
+        self.assertEqual(self._saved_port(home), "9000")
+
+    def test_nothing_installed_or_garbage_gives_no_port(self):
+        home = tempfile.mkdtemp()
+        self.assertEqual(self._saved_port(home), "")
+        os.makedirs(os.path.join(home, ".config/systemd/user"))
+        with open(os.path.join(home, ".config/systemd/user/frameart-gui.service"), "w") as f:
+            f.write("ExecStart=/usr/bin/python3 /x/app.py --port 99999\n")
+        self.assertEqual(self._saved_port(home), "")
+
+    def test_the_port_is_no_longer_hard_coded(self):
+        with open(os.path.join(HERE, "install.sh")) as f:
+            src = f.read()
+        self.assertNotRegex(src, r"(?m)^PORT=8080$")
+        self.assertIn('if [ -n "${PORT:-}" ]', src)
 
 class TestUnsplashKeyInThePanel(TempState):
     def setUp(self):

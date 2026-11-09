@@ -51,10 +51,14 @@ museum's own words, a cheerfully invented tale, or nothing — your choice. A QR
     — community-vetted photography (landscapes, coasts, night skies, cities). Keyless. Mostly
     CC BY / CC BY-SA licensed; the panel shows the photographer and licence.
   - [NASA's image library](https://images.nasa.gov) — nebulae, galaxies, planets, Earth from
-    orbit. Keyless, public domain. Press photos (launches, briefings) and black-and-white probe
-    frames are filtered out.
+    orbit. Keyless, public domain. Press photos (launches, briefings), charts and diagrams, and
+    black-and-white probe frames are filtered out.
   - [Unsplash](https://unsplash.com) — curated photography. Needs a free access key (the
     installer or the panel asks for it); without one the mix just skips Unsplash.
+
+  Each searches its own list of wall-friendly terms (or your subject), prefers pictures that
+  are already screen-shaped, and leaves out anything mentioning a word on the **Leave out**
+  list (churches, temples, protests, portraits… by default; edit it in the panel).
 - **Fullscreen by default.** Every piece fills the 4K screen: near-screen-shaped pictures are
   trimmed to fit, everything else sits on a blurred copy of itself. Low-resolution images are
   skipped rather than blown up.
@@ -82,7 +86,8 @@ museum's own words, a cheerfully invented tale, or nothing — your choice. A QR
   (ties the piece to a real, current news headline), first-person, movie-trailer, tabloid
   gossip, dad-jokes, fairytale. Tick several; one is picked at random each time.
 - **Favourites & graceful fallback.** ♥ a piece and it reappears more often — and if fresh art
-  ever can't be fetched, the Frame quietly re-shows a favourite instead of going blank.
+  ever can't be fetched, the Frame quietly re-shows a favourite instead of going blank. Pick
+  the **Favourites only** source to show nothing but your own picks, each in turn.
 - **Self-healing when the TV's asleep.** If a scheduled change can't reach the Frame (deep
   standby is common), it hands off to a background watcher that keeps polling and pushes the
   moment the TV wakes — so you don't miss a day. (On by default; toggle in the panel's Advanced.)
@@ -90,7 +95,7 @@ museum's own words, a cheerfully invented tale, or nothing — your choice. A QR
   the code to "online-only", the panel warns you and can ping your phone — otherwise scheduled
   runs would fail silently.
 - **Subject mode.** Ask for "only show art of cats" (or dogs, dragons, anything).
-- **Spice modes, dialed to taste.** Each of these can be set to turn up **Never / Rarely /
+- **Spice modes, dialed to taste** (museum sources). Each of these can be set to turn up **Never / Rarely /
   Sometimes / Always**, so they're an occasional surprise rather than every single day:
   - **Match the season** (hemisphere-aware) — snow, blossom, harvest…
   - **Celebrate holidays** — spooky art near Halloween, nativities at Christmas, hearts for Valentine's.
@@ -133,7 +138,8 @@ the TV), pick how often it should change, and hit **Save**. Done.
 > **Where it lives:** put the project folder wherever you want it to permanently live *before*
 > running the installer — it wires the background service to that folder. Your settings and
 > history live in `~/.config/frame` regardless, so they survive. If you move the folder later,
-> just re-run `./install.sh` to repoint everything.
+> just re-run `./install.sh` to repoint everything. A re-run keeps the panel on the port it
+> already uses; a first install uses 8080, or pick one with `PORT=8137 ./install.sh`.
 
 <details><summary>Prefer git?</summary>
 
@@ -172,11 +178,14 @@ When the installer finishes it prints a link — open it on any phone or laptop 
   turns up — **Off / Rarely / Normal / Often** — so you can dial back the ones you don't love
   without losing them entirely. The panel also shows which voice wrote the current caption.
 - **Source:** the modern mix (Wikimedia, NASA, Unsplash), one of them, a museum (the Met,
-  Cleveland, or either), or everything. Paste an Unsplash access key here to enable Unsplash.
+  Cleveland, or either), everything, or favourites only. Paste an Unsplash access key here to
+  enable Unsplash.
+- **Leave out pictures of…:** words a modern source skips (churches, protests, portraits…).
 - **Content:** *"only show art of cats"* for any source; for museums also the whole museum, a
   single genre, or a genre-a-day cycle.
-- **Spice modes** — season, holidays, live weather, *on this day*, and googly eyes — each set to
-  **Never / Rarely / Sometimes / Always** so they turn up as often (or as rarely) as you like.
+- **Spice modes** — season, holidays, live weather, *on this day* (museum sources), and googly
+  eyes — each set to **Never / Rarely / Sometimes / Always** so they turn up as often (or as
+  rarely) as you like.
 - **Screen fit:** *Smart* (the default) fills the screen with anything within 20% of its
   shape and puts the rest on the backdrop; or fill only with screen-shaped pieces (you choose
   how much trimming is acceptable: 10/20/30%), crop everything, or show every piece whole.
@@ -206,6 +215,8 @@ Prefer the terminal? `frame_push.py` does everything via flags (they override `c
 ```bash
 python3 frame_push.py --source wikimedia                     # a featured photo, full screen
 python3 frame_push.py --source nasa --subject saturn         # Saturn, from NASA
+python3 frame_push.py --source wikimedia --exclude "bridge,ship"   # …but no bridges or ships
+python3 frame_push.py --source favourites                    # only your saved favourites, in turn
 python3 frame_push.py --source met --placard --describe made-up   # a museum piece + label + a tall tale
 python3 frame_push.py --source cleveland --subject cats     # Cleveland, cats only
 python3 frame_push.py --weather                             # match the live local weather

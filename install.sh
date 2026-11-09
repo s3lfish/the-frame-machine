@@ -132,7 +132,43 @@ else
 fi
 
 # 5. Install the always-on control panel + note about scheduling
-PORT=8080
+# The panel's port: PORT=… on the command line wins; otherwise a re-run keeps the port the
+# installed service already uses (8080 is often taken, e.g. by a Docker container, and a
+# re-run must not move the panel onto it); a first install uses 8080.
+saved_port() {
+  "$PY" - <<'PY' 2>/dev/null || true
+import os, plistlib, re
+home = os.path.expanduser("~")
+args = []
+try:
+    with open(os.path.join(home, "Library/LaunchAgents/com.frameart.gui.plist"), "rb") as f:
+        args = [str(a) for a in plistlib.load(f).get("ProgramArguments") or []]
+except Exception:
+    try:
+        with open(os.path.join(home, ".config/systemd/user/frameart-gui.service")) as f:
+            line = next((l for l in f if l.startswith("ExecStart=")), "")
+        args = line.split()
+    except Exception:
+        pass
+port = next((args[i + 1] for i, a in enumerate(args[:-1]) if a == "--port"), "")
+m = re.fullmatch(r"\d{1,5}", port.strip())
+print(port.strip() if m and 0 < int(port) < 65536 else "")
+PY
+}
+if [ -n "${PORT:-}" ]; then
+  case "$PORT" in
+    *[!0-9]*) echo "  ✗ PORT must be a number, got '$PORT'."; exit 1 ;;
+  esac
+  echo "  ✓ Panel port: $PORT (from PORT=)"
+else
+  PORT="$(saved_port)"
+  if [ -n "$PORT" ]; then
+    echo "  ✓ Panel port: $PORT (kept from the installed panel)"
+  else
+    PORT=8080
+    echo "  ✓ Panel port: $PORT (run with PORT=… to choose another)"
+  fi
+fi
 OS="$(uname)"
 if [ "$OS" = "Darwin" ]; then
   PLIST="$HOME/Library/LaunchAgents/com.frameart.gui.plist"
