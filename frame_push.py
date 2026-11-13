@@ -14,8 +14,9 @@ Examples:
 """
 
 import argparse, io, os, re, json, math, random, shutil, socket, subprocess, sys, time, warnings, datetime, html, platform
+import plistlib, tarfile
 import requests
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageStat
 try:
     from wakeonlan import send_magic_packet
 except Exception:
@@ -1533,12 +1534,14 @@ MODERN_SOURCES = ("wikimedia", "nasa", "unsplash")
 SOURCE_POOLS = {"any": MUSEUM_SOURCES, "modern": MODERN_SOURCES,
                 "everything": MUSEUM_SOURCES + MODERN_SOURCES}
 FAVOURITES_SOURCE = "favourites"        # curated only: cycle through the saved favourites
-SOURCE_CHOICES = MUSEUM_SOURCES + MODERN_SOURCES + tuple(SOURCE_POOLS) + (FAVOURITES_SOURCE,)
+AERIAL_SOURCE = "aerial"                # Apple TV aerial stills: opt-in, never part of a mix
+SOURCE_CHOICES = (MUSEUM_SOURCES + MODERN_SOURCES + (AERIAL_SOURCE,) + tuple(SOURCE_POOLS)
+                  + (FAVOURITES_SOURCE,))
 # Where a retry goes when a source comes back empty (or, for Unsplash, has no key).
 SOURCE_FALLBACK = {"met": "cleveland", "cleveland": "met", "wikimedia": "nasa",
-                   "nasa": "wikimedia", "unsplash": "wikimedia"}
+                   "nasa": "wikimedia", "unsplash": "wikimedia", AERIAL_SOURCE: "nasa"}
 SOURCE_NAMES = {"met": "The Met", "cleveland": CLE_NAME, "wikimedia": "Wikimedia Commons",
-                "nasa": "NASA", "unsplash": "Unsplash"}
+                "nasa": "NASA", "unsplash": "Unsplash", AERIAL_SOURCE: "Apple TV aerials"}
 
 WM_API = "https://commons.wikimedia.org/w/api.php"
 WM_FEATURED = "Featured_pictures_on_Wikimedia_Commons"   # a category, searched with incategory:
@@ -1783,6 +1786,162 @@ def unsplash_candidates(term, exclude=()):
                              "credit": f"Photo by {user} on Unsplash", "museum": "Unsplash"}})
     return out
 
+# ---------- Apple TV aerials ----------
+# The aerial films Apple TV and macOS use as screen savers. Apple lists them in an
+# undocumented manifest on sylvan.apple.com, the same one the Aerial screen saver for macOS
+# and Aerial Views on Android TV read. Art Mode only shows stills, so this grabs one 4K SDR
+# frame with ffmpeg, which seeks with HTTP range requests and pulls a few MB rather than the
+# whole 300 MB–1 GB film. Apple can rename or withdraw the manifest at any time (resources-15
+# became resources-16), and the footage is Apple's, made for its own screen savers. That's
+# why it is a source you pick, never part of a mix.
+AERIAL_MANIFEST = "https://sylvan.apple.com/Aerials/resources-16.tar"
+AERIAL_HOST = "https://sylvan.apple.com/"
+AERIAL_STRINGS = "TVIdleScreenStrings.bundle/en.lproj/Localizable.nocache.strings"
+AERIAL_URL_KEYS = ("url-4K-SDR", "url-1080-SDR", "url-1080-H264")   # never HDR: Art Mode is SDR
+AERIAL_LEAD_IN = 8          # seconds past a point of interest: shots open mid-turn or on a fade
+AERIAL_BLANK_STDDEV = 4     # a frame flatter than this is a fade to black, not a night shot
+AERIAL_TIMEOUT = 180
+# sylvan.apple.com chains to Apple's own root, which macOS trusts but certifi (requests) and
+# most Linux stores don't. Pinning it here verifies the host without trusting anything else.
+# "Apple Root CA", SHA-256 B0:B1:73:0E:CB:C7:FF:45:05:14:2C:49:F1:29:5E:6E:DA:6B:CA:ED:7E:2C:68:C5:BE:91:B5:A1:10:01:F0:24
+APPLE_ROOT_CA = """-----BEGIN CERTIFICATE-----
+MIIEuzCCA6OgAwIBAgIBAjANBgkqhkiG9w0BAQUFADBiMQswCQYDVQQGEwJVUzET
+MBEGA1UEChMKQXBwbGUgSW5jLjEmMCQGA1UECxMdQXBwbGUgQ2VydGlmaWNhdGlv
+biBBdXRob3JpdHkxFjAUBgNVBAMTDUFwcGxlIFJvb3QgQ0EwHhcNMDYwNDI1MjE0
+MDM2WhcNMzUwMjA5MjE0MDM2WjBiMQswCQYDVQQGEwJVUzETMBEGA1UEChMKQXBw
+bGUgSW5jLjEmMCQGA1UECxMdQXBwbGUgQ2VydGlmaWNhdGlvbiBBdXRob3JpdHkx
+FjAUBgNVBAMTDUFwcGxlIFJvb3QgQ0EwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAw
+ggEKAoIBAQDkkakJH5HbHkdQ6wXtXnmELes2oldMVeyLGYne+Uts9QerIjAC6Bg+
++FAJ039BqJj50cpmnCRrEdCju+QbKsMflZ56DKRHi1vUFjczy8QPTc4UadHJGXL1
+XQ7Vf1+b8iUDulWPTV0N8WQ1IxVLFVkds5T39pyez1C6wVhQZ48ItCD3y6wsIG9w
+tj8BMIy3Q88PnT3zK0koGsj+zrW5DtleHNbLPbU6rfQPDgCSC7EhFi501TwN22IW
+q6NxkkdTVcGvL0Gz+PvjcM3mo0xFfh9Ma1CWQYnEdGILEINBhzOKgbEwWOxaBDKM
+aLOPHd5lc/9nXmW8Sdh2nzMUZaF3lMktAgMBAAGjggF6MIIBdjAOBgNVHQ8BAf8E
+BAMCAQYwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUK9BpR5R2Cf70a40uQKb3
+R01/CF4wHwYDVR0jBBgwFoAUK9BpR5R2Cf70a40uQKb3R01/CF4wggERBgNVHSAE
+ggEIMIIBBDCCAQAGCSqGSIb3Y2QFATCB8jAqBggrBgEFBQcCARYeaHR0cHM6Ly93
+d3cuYXBwbGUuY29tL2FwcGxlY2EvMIHDBggrBgEFBQcCAjCBthqBs1JlbGlhbmNl
+IG9uIHRoaXMgY2VydGlmaWNhdGUgYnkgYW55IHBhcnR5IGFzc3VtZXMgYWNjZXB0
+YW5jZSBvZiB0aGUgdGhlbiBhcHBsaWNhYmxlIHN0YW5kYXJkIHRlcm1zIGFuZCBj
+b25kaXRpb25zIG9mIHVzZSwgY2VydGlmaWNhdGUgcG9saWN5IGFuZCBjZXJ0aWZp
+Y2F0aW9uIHByYWN0aWNlIHN0YXRlbWVudHMuMA0GCSqGSIb3DQEBBQUAA4IBAQBc
+NplMLXi37Yyb3PN3m/J20ncwT8EfhYOFG5k9RzfyqZtAjizUsZAS2L70c5vu0mQP
+y3lPNNiiPvl4/2vIB+x9OYOLUyDTOMSxv5pPCmv/K/xZpwUJfBdAVhEedNO3iyM7
+R6PVbyTi69G3cN8PReEnyvFteO3ntRcXqNx+IjXKJdXZD9Zr1KIkIxH3oayPc4Fg
+xhtbCS+SsvhESPBgOJ4V9T0mZyCKM2r3DYLP3uujL/lTaltkwGMzd/c6ByxW69oP
+IQ7aunMZT7XZNn/Bh1XZp5m5MkL72NVxnn6hUrcbvZNCJBIqxw8dtk2cXmPIS4AX
+UKqK1drk/NAJBzewdXUh
+-----END CERTIFICATE-----
+"""
+
+def apple_ca_file():
+    """A file holding APPLE_ROOT_CA, for requests' `verify` and ffmpeg's -ca_file."""
+    os.makedirs(TMP, exist_ok=True)
+    path = os.path.join(TMP, "apple_root_ca.pem")
+    try:
+        with open(path) as f:
+            if f.read() == APPLE_ROOT_CA:
+                return path
+    except OSError:
+        pass
+    with open(path, "w") as f:
+        f.write(APPLE_ROOT_CA)
+    return path
+
+def ffmpeg_path():
+    """ffmpeg, or None. launchd and cron run with a bare PATH, so Homebrew's folders are tried too."""
+    found = os.environ.get("FRAME_FFMPEG") or shutil.which("ffmpeg")
+    if found:
+        return found
+    for d in ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"):
+        p = os.path.join(d, "ffmpeg")
+        if os.access(p, os.X_OK):
+            return p
+    return None
+
+def aerial_manifest():
+    """(assets, captions) from Apple's manifest: entries.json's assets and the English
+    point-of-interest captions ("A114_C001_0305OT_95" -> "The Gulf of California…")."""
+    r = requests.get(AERIAL_MANIFEST, headers=HEADERS, timeout=60, verify=apple_ca_file())
+    r.raise_for_status()
+    tar = tarfile.open(fileobj=io.BytesIO(r.content))      # read in memory, nothing extracted
+    assets = json.load(tar.extractfile("entries.json")).get("assets") or []
+    try:
+        captions = plistlib.load(tar.extractfile(AERIAL_STRINGS))
+    except Exception:                                       # captions are a nicety
+        captions = {}
+    return assets, (captions if isinstance(captions, dict) else {})
+
+def aerial_frame(url, seconds, ffmpeg=None):
+    """One RGB frame `seconds` into the film at `url`, or None. Only https to Apple's host,
+    verified against APPLE_ROOT_CA, and only the network protocols that needs."""
+    ffmpeg = ffmpeg or ffmpeg_path()
+    if not ffmpeg or not url.startswith(AERIAL_HOST):
+        return None
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
+           "-protocol_whitelist", "https,tls,tcp", "-tls_verify", "1", "-ca_file", apple_ca_file(),
+           "-ss", str(seconds), "-i", url, "-frames:v", "1",
+           # Apple's SDR films are BT.709; say so, or swscale converts with BT.601 and the
+           # greens and reds shift.
+           "-vf", "scale=in_color_matrix=bt709:in_range=tv:out_range=pc,format=rgb24",
+           "-f", "image2pipe", "-c:v", "png", "-"]
+    try:
+        done = subprocess.run(cmd, capture_output=True, timeout=AERIAL_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"  ! ffmpeg: {str(e)[:100]}", file=sys.stderr)
+        return None
+    if done.returncode or not done.stdout:
+        err = done.stderr.decode("utf-8", "replace").strip().splitlines()
+        print(f"  ! ffmpeg: {(err[-1] if err else 'no frame')[:100]}", file=sys.stderr)
+        return None
+    try:
+        im = Image.open(io.BytesIO(done.stdout)).convert("RGB")
+    except Exception:
+        return None
+    small = im.convert("L"); small.thumbnail((160, 90))
+    if ImageStat.Stat(small).stddev[0] < AERIAL_BLANK_STDDEV:
+        print(f"  - blank frame at {seconds}s")
+        return None
+    return im
+
+def aerial_candidates(term, exclude=()):
+    """One candidate per aerial film, each at a random point of interest (Apple's own
+    marks for where the view changes). With a term, only films whose name or captions
+    mention it, at a point whose caption does where there is one."""
+    ffmpeg = ffmpeg_path()
+    if not ffmpeg:
+        print("  aerial: needs ffmpeg (brew install ffmpeg / sudo apt install ffmpeg)")
+        return []
+    assets, captions = aerial_manifest()
+    t = " ".join((term or "").split()).lower()
+    out = []
+    for a in assets:
+        url = next((a[k].strip() for k in AERIAL_URL_KEYS
+                    if isinstance(a.get(k), str) and a[k].strip().startswith(AERIAL_HOST)), None)
+        if not url or not a.get("id"):
+            continue
+        label = " ".join(str(a.get("accessibilityLabel") or "Aerial").split())
+        pois = {}
+        for sec, key in (a.get("pointsOfInterest") or {}).items():
+            try:
+                pois[int(sec)] = " ".join(str(captions.get(key) or "").split())   # Apple uses NBSPs
+            except (TypeError, ValueError):
+                continue
+        pois = pois or {0: ""}
+        if t:
+            hits = [s for s, c in pois.items() if t in c.lower()]
+            if not hits and t not in label.lower():
+                continue
+            pois = {s: pois[s] for s in hits} or pois
+        sec = random.choice(sorted(pois))
+        caption = pois[sec]
+        out.append({"id": f"aerial:{a['id']}", "img_url": url, "w": CANVAS[0], "h": CANVAS[1],
+                    "page_url": "", "real_text": caption,
+                    "grab": (lambda u=url, s=sec + AERIAL_LEAD_IN: aerial_frame(u, s, ffmpeg)),
+                    "meta": {"title": label, "artist": "Apple TV aerial", "date": "",
+                             "credit": "Apple TV aerial screen saver, © Apple", "museum": "Apple TV"}})
+    return out
+
 def active_exclusions(exclude, term):
     """The exclusion words that apply to a search for `term`: a word the user is asking for
     ('cathedral' typed as the subject) is not also left out."""
@@ -1808,13 +1967,14 @@ def fit_rank(w, h, tw, th, fill_tol):
 def fetch_modern(src, count, query, mat_rgb, placard=False, describe="off", qr=True, tone="whimsical",
                  avoid=None, bias=None, googly_chance=0.0, googly_strict=0.5, fill=False, fill_tol=0.2,
                  max_upscale=1.6, fill_mat=False, exclude=()):
-    """Fetch from one of MODERN_SOURCES and render like the museum fetchers do. `exclude` is a
+    """Fetch from one of MODERN_SOURCES (or the aerials) and render like the museum fetchers do. `exclude` is a
     list of words to leave out: negated in the Wikimedia search, and matched against every
     source's titles."""
     os.makedirs(TMP, exist_ok=True); LAST_PIECES.clear()
     avoid = avoid or set()
     pool, finder = {"wikimedia": (WM_TERMS, wikimedia_candidates), "nasa": (NASA_TERMS, nasa_candidates),
-                    "unsplash": (UNSPLASH_TERMS, unsplash_candidates)}[src]
+                    "unsplash": (UNSPLASH_TERMS, unsplash_candidates),
+                    AERIAL_SOURCE: ((), aerial_candidates)}[src]
     term = _search_term(query, bias, pool)
     exclude = active_exclusions(exclude, term)
     try:                                         # an API changing shape must mean "try another
@@ -1844,7 +2004,7 @@ def fetch_modern(src, count, query, mat_rgb, placard=False, describe="off", qr=T
             hpf = fills_screen(w, h, tw, th, fill, fill_tol)
             if (fill and not hpf and not fill_mat) or too_small(w, h, placard, hpf, max_upscale):
                 continue
-        art = download_image(c["img_url"])
+        art = c["grab"]() if c.get("grab") else download_image(c["img_url"])
         if art is None:
             failed += 1
             continue
@@ -1935,7 +2095,7 @@ def _fetch_source(args, mat_rgb, count, relax=0, src=None):
     holidays    = not relax and _roll(args.holidays_chance)
     weather     = not relax and _roll(args.weather_chance)
     on_this_day = not relax and _roll(args.on_this_day_chance)
-    if src in MODERN_SOURCES:
+    if src in MODERN_SOURCES + (AERIAL_SOURCE,):
         # Only the subject carries over: the date/weather biases are for museum collections.
         bias = bias_terms(args.subject)
         if bias:

@@ -632,6 +632,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
      <option value="wikimedia">Wikimedia Commons featured pictures — landscapes, nature, cities</option>
      <option value="nasa">NASA — space and Earth from orbit</option>
      <option value="unsplash">Unsplash — curated photography (needs a free key, below)</option>
+     <option value="aerial">Apple TV aerials — stills from Apple's screen-saver films (needs ffmpeg; not in the mixes)</option>
    </optgroup>
    <optgroup label="Museums (public domain, so mostly pre-1929)">
      <option value="met">The Met</option>

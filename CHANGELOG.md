@@ -38,6 +38,15 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   are. (2026-11-09)
 
 ### Added
+- **Apple TV aerials** source (`--source aerial`): a still from one of Apple's aerial
+  screen-saver films (Greenland, the Golden Gate in fog, the ISS over Korea at night…), the
+  same films the Aerial Views app plays on an Android TV. Art Mode only shows stills, so ffmpeg
+  grabs one 4K SDR frame at one of Apple's points of interest. It seeks with range requests,
+  so a run pulls a few MB, not the whole film. A subject or query matches the film names and
+  Apple's captions. The manifest is undocumented and the footage is Apple's, so the source is
+  opt-in and never part of a mix. It needs ffmpeg (`brew install ffmpeg` /
+  `apt install ffmpeg`; the Docker image includes it) and falls back to NASA without it.
+  Apple's server chains to Apple's own root certificate, which is pinned in the code.
 - **Leave out pictures of…** A list of words a modern source skips (default: church, temple,
   cathedral, mosque, protest, homeless, portrait). They're negated in the Wikimedia search,
   and every source's titles are checked against them. A word you type as the subject is

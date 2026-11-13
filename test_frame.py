@@ -683,7 +683,7 @@ class TestSourcePick(TempState):
             self.assertEqual(fp.pick_source(src), src)
 
     def test_every_source_has_a_fallback_and_a_name(self):
-        for src in fp.MUSEUM_SOURCES + fp.MODERN_SOURCES:
+        for src in fp.MUSEUM_SOURCES + fp.MODERN_SOURCES + (fp.AERIAL_SOURCE,):
             self.assertIn(fp.SOURCE_FALLBACK[src], fp.SOURCE_NAMES)
             self.assertIn(src, fp.SOURCE_NAMES)
 
@@ -929,6 +929,116 @@ class TestFetchModern(TempState):
         with Patch(fp, nasa_candidates=lambda term, exclude=(): [self._cand("nasa:1")],
                    download_image=lambda url, headers=None: Image.new("RGB", (6000, 4000), (90, 90, 90))):
             self.assertEqual(fp.fetch_modern("nasa", 1, None, None), [])
+
+
+class TestAerial(TempState):
+    """Apple TV aerial stills: one frame grabbed with ffmpeg from Apple's screen-saver films."""
+    HOST = "https://sylvan.apple.com/Aerials/2x/Videos/"
+
+    def _asset(self, aid, label, pois, **urls):
+        urls = urls or {"url-4K-SDR": f"{self.HOST}{aid}_SDR_4K_HEVC.mov",
+                        "url-4K-HDR": f"{self.HOST}{aid}_HDR_4K_HEVC.mov"}
+        return {"id": aid, "accessibilityLabel": label,
+                "pointsOfInterest": {str(k): v for k, v in pois.items()}, **urls}
+
+    def _cands(self, assets, captions=None, term=None):
+        with Patch(fp, ffmpeg_path=lambda: "/bin/ffmpeg",
+                   aerial_manifest=lambda: (assets, captions or {})):
+            return fp.aerial_candidates(term)
+
+    def test_one_sdr_candidate_per_film(self):
+        out = self._cands([self._asset("A1", "Greenland", {0: "G_0", 60: "G_60"}),
+                           self._asset("A2", "London", {0: "L_0"})])
+        self.assertEqual([c["id"] for c in out], ["aerial:A1", "aerial:A2"])
+        self.assertTrue(all("_SDR_" in c["img_url"] for c in out))     # never the HDR film
+        self.assertEqual((out[0]["w"], out[0]["h"]), fp.CANVAS)
+        self.assertEqual(out[0]["meta"]["title"], "Greenland")
+
+    def test_urls_off_apples_host_are_dropped(self):
+        evil = self._asset("A3", "Evil", {0: "E_0"}, **{"url-4K-SDR": "file:///etc/passwd",
+                                                         "url-1080-SDR": "https://evil.example/x.mov"})
+        self.assertEqual(self._cands([evil]), [])
+
+    def test_a_term_picks_the_matching_point_and_apples_nbsps_match(self):
+        caps = {"S_0": "Over the city", "S_140": "San\xa0Francisco Bay and the Golden\xa0Gate Bridge"}
+        a = [self._asset("A1", "San Francisco", {0: "S_0", 140: "S_140"}),
+             self._asset("A2", "London", {0: "L_0"})]
+        for _ in range(10):
+            out = self._cands(a, caps, "golden gate")
+            self.assertEqual([c["id"] for c in out], ["aerial:A1"])
+            self.assertEqual(out[0]["real_text"], "San Francisco Bay and the Golden Gate Bridge")
+        self.assertEqual([c["id"] for c in self._cands(a, caps, "london")], ["aerial:A2"])
+
+    def test_no_ffmpeg_means_no_candidates_and_no_manifest_fetch(self):
+        def boom():
+            raise AssertionError("fetched the manifest without ffmpeg")
+        with Patch(fp, ffmpeg_path=lambda: None, aerial_manifest=boom):
+            self.assertEqual(fp.aerial_candidates(None), [])
+
+    def _png(self, colour=(30, 90, 160), noisy=True):
+        import io, random
+        im = Image.new("RGB", (320, 180), colour)
+        if noisy:
+            for _ in range(4000):
+                im.putpixel((random.randrange(320), random.randrange(180)), (250, 250, 250))
+        buf = io.BytesIO(); im.save(buf, "PNG")
+        return buf.getvalue()
+
+    def test_the_grab_is_locked_to_apple_over_verified_tls(self):
+        import subprocess
+        seen = []
+        def run(cmd, **kw):
+            seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, self._png(), b"")
+        with Patch(fp.subprocess, run=run):
+            im = fp.aerial_frame(self.HOST + "x.mov", 68, "/bin/ffmpeg")
+            self.assertIsNone(fp.aerial_frame("https://evil.example/x.mov", 1, "/bin/ffmpeg"))
+        self.assertEqual(im.size, (320, 180))
+        self.assertEqual(len(seen), 1)                       # the off-host URL never ran ffmpeg
+        cmd = seen[0]
+        self.assertEqual(cmd[cmd.index("-protocol_whitelist") + 1], "https,tls,tcp")
+        self.assertEqual(cmd[cmd.index("-tls_verify") + 1], "1")
+        with open(cmd[cmd.index("-ca_file") + 1]) as f:
+            self.assertEqual(f.read(), fp.APPLE_ROOT_CA)
+        self.assertEqual(cmd[cmd.index("-ss") + 1], "68")
+
+    def test_a_fade_to_black_is_not_a_picture(self):
+        import subprocess
+        flat = self._png((2, 2, 2), noisy=False)
+        with Patch(fp.subprocess, run=lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, flat, b"")):
+            self.assertIsNone(fp.aerial_frame(self.HOST + "x.mov", 8, "/bin/ffmpeg"))
+
+    def test_ffmpeg_failing_gives_none(self):
+        import subprocess
+        with Patch(fp.subprocess, run=lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, b"", b"boom")):
+            self.assertIsNone(fp.aerial_frame(self.HOST + "x.mov", 8, "/bin/ffmpeg"))
+
+    def test_fetch_modern_renders_a_grabbed_frame(self):
+        def never(url, headers=None):
+            raise AssertionError("downloaded the film instead of grabbing a frame")
+        cand = {"id": "aerial:A1", "img_url": self.HOST + "x.mov", "w": 3840, "h": 2160, "page_url": "",
+                "real_text": "Over Greenland", "grab": lambda: Image.new("RGB", (3840, 2160), (40, 90, 160)),
+                "meta": {"title": "Greenland", "artist": "Apple TV aerial", "date": "", "credit": "Apple"}}
+        with Patch(fp, aerial_candidates=lambda term, exclude=(): [cand], download_image=never):
+            paths = fp.fetch_modern(fp.AERIAL_SOURCE, 1, None, None, fill=True)
+        self.assertEqual(len(paths), 1)
+        self.assertEqual(Image.open(paths[0]).size, fp.CANVAS)
+        self.assertEqual(fp.LAST_PIECES[0]["source"], "Apple TV aerials")
+
+    def test_aerials_are_opt_in_never_in_a_mix(self):
+        self.assertIn(fp.AERIAL_SOURCE, fp.SOURCE_CHOICES)
+        for pool in fp.SOURCE_POOLS.values():
+            self.assertNotIn(fp.AERIAL_SOURCE, pool)
+
+    def test_ffmpeg_is_found_under_launchds_bare_path(self):
+        saved = os.environ.pop("FRAME_FFMPEG", None)
+        try:
+            with Patch(fp.shutil, which=lambda name: None), \
+                 Patch(fp.os, access=lambda p, mode: p == "/opt/homebrew/bin/ffmpeg"):
+                self.assertEqual(fp.ffmpeg_path(), "/opt/homebrew/bin/ffmpeg")
+        finally:
+            if saved is not None:
+                os.environ["FRAME_FFMPEG"] = saved
 
 
 def _run_args(**kw):
