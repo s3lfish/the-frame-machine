@@ -62,6 +62,11 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   Wikimedia searches stick to scenery and leave out scanned paintings. (2026-11-09)
 
 ### Fixed
+- **Fetching several pieces at once uploads them.** With *fetch* at 5, preparing the
+  pictures took about a minute; the TV dropped the connection opened before that, and every
+  upload failed. The uploads now use a fresh connection, and the retry's reconnect works
+  (it called a name only imported inside another function, so each retry reused the dead
+  socket).
 - **A banned piece really leaves the TV.** *Never show again* only blocklisted the piece,
   so its upload stayed among the newest pieces the TV's own slideshow cycles and kept
   coming back. A ban now also deletes that upload from the TV (straight away, or the next
