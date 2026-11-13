@@ -37,13 +37,13 @@ class TempState(unittest.TestCase):
         self._saved = {k: getattr(fp, k) for k in
                        ("CFG", "STATUS", "HISTORY", "BLOCKLIST", "FAVOURITES", "NAV",
                         "CURRENT_IMG", "HIST_IMG_DIR", "FAVS_DIR", "CONFIG", "TMP",
-                        "STATE", "PENDING_DELETE")}
+                        "STATE", "PENDING_DELETE", "SHOWN")}
         fp.CFG = os.path.join(self.tmp, "cfg")
         fp.TMP = os.path.join(self.tmp, "art")
         for name, leaf in (("STATUS", "status.json"), ("HISTORY", "history.json"),
                            ("BLOCKLIST", "blocklist.json"), ("FAVOURITES", "favourites.json"),
                            ("STATE", "uploaded.json"), ("PENDING_DELETE", "pending_delete.json"),
-                           ("NAV", "nav.json"), ("CURRENT_IMG", "current.jpg"),
+                           ("NAV", "nav.json"), ("CURRENT_IMG", "current.jpg"), ("SHOWN", "shown.json"),
                            ("CONFIG", "config.json")):
             setattr(fp, name, os.path.join(fp.CFG, leaf))
         fp.HIST_IMG_DIR = os.path.join(fp.CFG, "history_imgs")
@@ -1803,6 +1803,84 @@ class TestRunUploadsOverAFreshConnection(TempState):
             fp.run(self._args())
         self.assertEqual(len(conns), 3)
         self.assertEqual(conns[2].uploads != [], True)
+
+
+class TestNoRepeats(TempState):
+    """Bug (2026-11-13): history records one piece per run, so with fetch 5 the other four
+    were never avoided and aerials came back within hours. Every piece put on the TV is now
+    recorded, and a modern source tries never-shown candidates first, then the longest-ago
+    shown, so the 114 aerial films go all the way round before one repeats."""
+
+    def test_the_shown_list_keeps_each_id_once_at_its_latest_place(self):
+        fp.record_shown(["a", "b", "c"])
+        fp.record_shown(["a", None, "d"])
+        self.assertEqual(fp._load_list(fp.SHOWN), ["b", "c", "a", "d"])
+
+    def test_the_shown_list_is_capped(self):
+        with Patch(fp, SHOWN_MAX=3):
+            fp.record_shown(["a", "b", "c", "d"])
+        self.assertEqual(fp._load_list(fp.SHOWN), ["b", "c", "d"])
+
+    def test_history_from_before_the_shown_list_still_counts(self):
+        fp._save_list(fp.HISTORY, [{"id": "old"}, {"id": "b"}])
+        fp.record_shown(["b", "c"])
+        self.assertEqual(fp.shown_order(), ["old", "b", "c"])
+
+    def _cand(self, cid):
+        return {"id": cid, "img_url": f"https://x/{cid}", "w": 3840, "h": 2160, "page_url": "",
+                "real_text": "", "meta": {"title": cid, "artist": "A", "date": "", "credit": "c"},
+                "grab": lambda: Image.new("RGB", (3840, 2160), (40, 90, 160))}
+
+    def _pick(self, ids, shown, count):
+        with Patch(fp, aerial_candidates=lambda term, exclude=(): [self._cand(i) for i in ids]):
+            fp.fetch_modern(fp.AERIAL_SOURCE, count, None, None, fill=True, shown=shown)
+        return [p["id"] for p in fp.LAST_PIECES]
+
+    def test_never_shown_comes_first(self):
+        for _ in range(10):
+            got = self._pick(["a", "b", "c", "d", "e"], shown=["a", "c", "e"], count=2)
+            self.assertEqual(sorted(got), ["b", "d"])
+
+    def test_when_all_have_been_shown_the_longest_ago_comes_back_first(self):
+        got = self._pick(["a", "b", "c", "d"], shown=["c", "a", "d", "b"], count=3)
+        self.assertEqual(got, ["c", "a", "d"])
+
+    def test_the_whole_pool_goes_round_before_a_repeat(self):
+        pool = [f"f{n}" for n in range(12)]
+        seen = []
+        for _ in range(4):                                   # 4 runs x 3 = all 12, no repeats
+            got = self._pick(pool, shown=fp.shown_order(), count=3)
+            fp.record_shown(got); seen += got
+        self.assertEqual(sorted(seen), sorted(pool))
+
+    def test_fetch_source_hands_the_order_to_modern_and_skips_it_at_museums(self):
+        fp.record_shown(["aerial:x", "met:1"])
+        got = {}
+        def modern(*a, **k):
+            got["modern"] = k.get("shown"); return []
+        def met(count, query, mat_rgb, theme, placard, all_types, describe, types, qr, tone, avoid, *a, **k):
+            got["met"] = avoid; return []
+        with Patch(fp, fetch_modern=modern, fetch_matted=met):
+            fp._fetch_source(_run_args(source=fp.AERIAL_SOURCE), None, 1)
+            fp._fetch_source(_run_args(source="met"), None, 1, relax=1)
+        self.assertEqual(got["modern"], ["aerial:x", "met:1"])
+        self.assertIn("met:1", got["met"])
+
+    def test_a_run_records_every_uploaded_piece_not_just_the_first(self):
+        os.makedirs(fp.TMP, exist_ok=True)
+        paths = []
+        for n in range(3):
+            p = os.path.join(fp.TMP, f"{n}.jpg"); Image.new("RGB", (64, 36)).save(p); paths.append(p)
+        def gather(args, mat, count):
+            fp.LAST_PIECES[:] = [{"id": f"aerial:{n}", "title": str(n)} for n in range(3)]
+            return paths
+        conn = TestRunUploadsOverAFreshConnection.Conn(dead=False)
+        args = TestRunUploadsOverAFreshConnection._args(self)
+        args.no_record = False
+        with Patch(fp, locate_frame=lambda a: "192.168.4.52", open_art=lambda a, ip: conn,
+                   purge_banned=lambda art: None, _gather=gather):
+            fp.run(args)
+        self.assertEqual(fp._load_list(fp.SHOWN), ["aerial:0", "aerial:1", "aerial:2"])
 
 
 # ------------------------------------------------------------------------- the panel

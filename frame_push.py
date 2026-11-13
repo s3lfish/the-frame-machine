@@ -255,6 +255,10 @@ NAV = os.path.join(CFG, "nav.json")              # where you currently are when 
 FAVS_DIR = os.path.join(CFG, "favourites")       # saved favourite images
 FAVOURITES = os.path.join(CFG, "favourites.json")  # favourite metadata
 HISTORY_MAX = 40                            # how many past pieces (and their images) to keep
+# Every piece put on the TV, oldest first. History records one piece per run (the one
+# displayed), so with fetch 5 the other four were never avoided and came back within hours.
+SHOWN = os.path.join(CFG, "shown.json")
+SHOWN_MAX = 1000
 LAST_PIECES = []                            # meta of pieces prepped this run (for status)
 
 def history_navlist():
@@ -281,6 +285,22 @@ def _save_list(path, data):
         os.makedirs(CFG, exist_ok=True); json.dump(data, open(path, "w"))
     except Exception:
         pass
+
+def record_shown(ids):
+    """Add `ids` to the shown list as the newest, keeping each id once."""
+    ids = [str(i) for i in ids if i]
+    if not ids:
+        return
+    new = set(ids)
+    shown = [i for i in _load_list(SHOWN) if str(i) not in new] + ids
+    _save_list(SHOWN, shown[-SHOWN_MAX:])
+
+def shown_order():
+    """Ids already put on the TV, oldest first: history (which predates the shown list), then
+    the shown list. An id appears once, at its latest position."""
+    order = [str(h.get("id")) for h in _load_list(HISTORY) if h.get("id")] + [str(i) for i in _load_list(SHOWN)]
+    latest = {cid: n for n, cid in enumerate(order)}
+    return [cid for n, cid in enumerate(order) if latest[cid] == n]
 
 def ban_piece(pid, content_ids=()):
     """Never show `pid` again. Blocklisting alone only stops it being fetched: its upload
@@ -1966,10 +1986,12 @@ def fit_rank(w, h, tw, th, fill_tol):
 
 def fetch_modern(src, count, query, mat_rgb, placard=False, describe="off", qr=True, tone="whimsical",
                  avoid=None, bias=None, googly_chance=0.0, googly_strict=0.5, fill=False, fill_tol=0.2,
-                 max_upscale=1.6, fill_mat=False, exclude=()):
+                 max_upscale=1.6, fill_mat=False, exclude=(), shown=()):
     """Fetch from one of MODERN_SOURCES (or the aerials) and render like the museum fetchers do. `exclude` is a
     list of words to leave out: negated in the Wikimedia search, and matched against every
-    source's titles."""
+    source's titles. `shown` (oldest first) puts never-shown candidates first and then the
+    longest-ago shown, so a small pool like the aerials goes all the way round before
+    anything comes back."""
     os.makedirs(TMP, exist_ok=True); LAST_PIECES.clear()
     avoid = avoid or set()
     pool, finder = {"wikimedia": (WM_TERMS, wikimedia_candidates), "nasa": (NASA_TERMS, nasa_candidates),
@@ -1986,6 +2008,9 @@ def fetch_modern(src, count, query, mat_rgb, placard=False, describe="off", qr=T
     tw, th = fill_target(placard)
     random.shuffle(cands)                        # stable sort: still random within each rank
     cands.sort(key=lambda c: fit_rank(c.get("w"), c.get("h"), tw, th, fill_tol))
+    if shown:
+        rank = {cid: n for n, cid in enumerate(shown)}
+        cands.sort(key=lambda c: (c["id"] in rank, rank.get(c["id"], -1)))
     paths, failed = [], 0
     for c in cands:
         if len(paths) >= count or failed >= MAX_FAILED_DOWNLOADS:
@@ -2089,6 +2114,7 @@ def _fetch_source(args, mat_rgb, count, relax=0, src=None):
     season/holiday/weather/on-this-day biases off (a bias term like an obscure
     'on this day' event can easily match nothing at a museum). `src` forces a museum."""
     avoid = {str(x) for x in _load_list(BLOCKLIST)} | {str(h.get("id")) for h in _load_list(HISTORY)[-40:]}
+    shown = shown_order()
     src = src or pick_source(args.source)
     # Each bias mode is rolled once per run against its configured chance.
     seasonal    = not relax and _roll(args.seasonal_chance)
@@ -2103,17 +2129,17 @@ def _fetch_source(args, mat_rgb, count, relax=0, src=None):
         paths = fetch_modern(src, count, args.query, mat_rgb, args.placard, args.describe, args.qr,
                              args.tone, avoid, bias, args.googly_chance, args.googly_strict, args.fill,
                              args.fill_tolerance, args.max_upscale, fill_mat=args.fill_mat,
-                             exclude=getattr(args, "exclude", ()))
+                             exclude=getattr(args, "exclude", ()), shown=shown)
     elif src == "cleveland":
         paths = fetch_cleveland(count, args.query, mat_rgb, args.theme, args.placard,
-                                args.describe, args.types, args.qr, args.tone, avoid,
+                                args.describe, args.types, args.qr, args.tone, avoid | set(shown),
                                 seasonal, args.hemisphere, args.all_types, args.subject, holidays,
                                 weather, on_this_day, args.latitude, args.longitude, args.googly_chance,
                                 args.googly_strict, args.fill, args.fill_tolerance, args.max_upscale,
                              fill_mat=args.fill_mat)
     else:
         paths = fetch_matted(count, args.query, mat_rgb, args.theme, args.placard, args.all_types,
-                             args.describe, args.types, args.qr, args.tone, avoid, seasonal,
+                             args.describe, args.types, args.qr, args.tone, avoid | set(shown), seasonal,
                              args.hemisphere, args.subject, holidays,
                              weather, on_this_day, args.latitude, args.longitude, args.googly_chance,
                              args.googly_strict, args.fill, args.fill_tolerance, args.max_upscale,
@@ -2241,13 +2267,13 @@ def run(args):
         print(f"  ! couldn't reopen the art channel, using the first one: {str(e)[:100]}", file=sys.stderr)
 
     print(f"Uploading {len(paths)} image(s)...")
-    ids = []
-    for p in paths:
+    ids, sent = [], []
+    for n, p in enumerate(paths):
         data = open(p, "rb").read()
         for attempt in range(1, args.upload_retries + 1):
             try:
                 cid = art.upload(data, file_type="JPEG", matte="none")
-                ids.append(cid)
+                ids.append(cid); sent.append(n)
                 print(f"  uploaded {os.path.basename(p)} -> {cid}")
                 break
             except Exception as e:
@@ -2262,6 +2288,7 @@ def run(args):
         raise RuntimeError("All uploads failed (intermittent art-channel errors). Try re-running.")
 
     json.dump(ids, open(STATE, "w"))
+    record_shown([LAST_PIECES[n].get("id") for n in sent if n < len(LAST_PIECES)])
 
     if ids and not args.no_select:
         art.select_image(ids[0], show=True)

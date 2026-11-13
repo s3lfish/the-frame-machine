@@ -62,6 +62,11 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   Wikimedia searches stick to scenery and leave out scanned paintings. (2026-11-09)
 
 ### Fixed
+- **No repeats when several pieces go up at once.** History records one piece per run (the
+  one displayed), so with *fetch* at 5 the other four were never avoided and came back
+  within hours. Every piece put on the TV is now recorded (`shown.json`, the last 1000).
+  Modern sources and the aerials try never-shown pictures first, then the longest-ago shown,
+  so all 114 aerial films go round before one repeats. Museums skip anything shown.
 - **Fetching several pieces at once uploads them.** With *fetch* at 5, preparing the
   pictures took about a minute; the TV dropped the connection opened before that, and every
   upload failed. The uploads now use a fresh connection, and the retry's reconnect works
