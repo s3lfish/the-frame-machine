@@ -62,6 +62,11 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   Wikimedia searches stick to scenery and leave out scanned paintings. (2026-11-09)
 
 ### Fixed
+- **A reshown favourite comes from the source you picked.** A scheduled run has a 20%
+  chance of reshowing a favourite, and it picked from all of them. With the aerials
+  configured, a Met favourite saved in the museum days kept turning up among them. The
+  reshow, and the fallback when no fresh art can be fetched, now only pick favourites from
+  the configured source or mix. *Favourites only* still cycles through all of them.
 - **No repeats when several pieces go up at once.** History records one piece per run (the
   one displayed), so with *fetch* at 5 the other four were never avoided and came back
   within hours. Every piece put on the TV is now recorded (`shown.json`, the last 1000).

@@ -2088,11 +2088,23 @@ def notify(msg):
         pass
 
 # ---------- main ----------
-def favourite_pick(cycle=False):
+# A piece's id says where it came from; a reshown favourite has to come from the configured
+# source. Without this a Met favourite saved in the museum days kept turning up among the
+# aerials (2026-11-13: Hiroshige's "Hamamatsu", twice in one day).
+SOURCE_ID_PREFIX = {"met": "met:", "cleveland": "cle:", "wikimedia": "wm:", "nasa": "nasa:",
+                    "unsplash": "us:", AERIAL_SOURCE: "aerial:"}
+
+def source_prefixes(choice):
+    """The id prefixes of the sources a configured source or pool name covers."""
+    return tuple(SOURCE_ID_PREFIX[s] for s in SOURCE_POOLS.get(choice, (choice,)) if s in SOURCE_ID_PREFIX)
+
+def favourite_pick(cycle=False, prefixes=None):
     """A saved favourite image path (and set it as the 'prepped' piece), or None. Random, or
     with cycle=True the one shown longest ago (never-shown first), so 'favourites only' works
-    through them all before repeating."""
-    favs = [f for f in _load_list(FAVOURITES) if os.path.exists(f.get("file", ""))]
+    through them all before repeating. `prefixes` limits it to favourites whose id starts with
+    one of them (None = any)."""
+    favs = [f for f in _load_list(FAVOURITES) if os.path.exists(f.get("file", ""))
+            and (prefixes is None or str(f.get("id", "")).startswith(tuple(prefixes)))]
     if not favs:
         return None
     if cycle:
@@ -2175,7 +2187,8 @@ FAV_CHANCE = 0.2   # chance a scheduled run re-shows a favourite instead of fres
 def _gather(args, mat_rgb, count):
     """Fetch `count` rendered images (local files or any source), with favourites mixed in
     and used as a graceful fallback if fresh art can't be fetched. Preview and an explicit
-    'change now' (--force) always fetch fresh; only automatic runs re-show favourites."""
+    'change now' (--force) always fetch fresh; only automatic runs re-show favourites, and
+    only ones from the configured source."""
     if args.files:
         return prep_local(args.files, mat_rgb, args.googly_chance, args.googly_strict, args.fill,
                           args.fill_tolerance, args.fill_mat)
@@ -2185,13 +2198,14 @@ def _gather(args, mat_rgb, count):
             print("  ★ favourites only"); return [fav]
         print("  favourites only, but none are saved yet — using the modern mix")
         args = argparse.Namespace(**vars(args)); args.source = "modern"
+    mine = source_prefixes(args.source)
     if not args.preview and not args.force and random.random() < FAV_CHANCE:
-        fav = favourite_pick()
+        fav = favourite_pick(prefixes=mine)
         if fav:
             print("  ★ reshowing a favourite"); return [fav]
     paths = _fetch_with_retries(args, mat_rgb, count)
     if not paths and not args.preview:         # couldn't get new art -> fall back to a favourite
-        fav = favourite_pick()
+        fav = favourite_pick(prefixes=mine)
         if fav:
             print("  ★ no fresh art — reshowing a favourite"); return [fav]
     return paths
