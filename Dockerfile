@@ -4,8 +4,9 @@ FROM python:3.12-slim
 # iputils-ping + net-tools: TV discovery pings the subnet and reads the ARP table for the MAC;
 #   the slim base image has neither, so discovery would fail outright.
 # cron: the panel writes a crontab for the schedule, so the daemon has to exist to run it.
+# ffmpeg: the Apple TV aerials source grabs a still from Apple's films with it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        fonts-liberation iputils-ping net-tools cron \
+        fonts-liberation iputils-ping net-tools cron ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

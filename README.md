@@ -59,6 +59,12 @@ museum's own words, a cheerfully invented tale, or nothing — your choice. A QR
   Each searches its own list of wall-friendly terms (or your subject), prefers pictures that
   are already screen-shaped, and leaves out anything mentioning a word on the **Leave out**
   list (churches, temples, protests, portraits… by default; edit it in the panel).
+- **Apple TV aerials, as stills** (`--source aerial`, not part of any mix). Each run grabs one
+  4K frame from Apple's aerial screen-saver films, at one of Apple's own points of interest.
+  It needs [ffmpeg](https://ffmpeg.org) (`brew install ffmpeg` or `sudo apt install ffmpeg`).
+  Art Mode can't play video, so this is the closest the Frame gets to the moving screen saver.
+  Apple's manifest isn't a documented API and the footage is Apple's, made for its own screen
+  savers: fine on your own wall, but it may stop working whenever Apple changes the feed.
 - **Fullscreen by default.** Every piece fills the 4K screen: near-screen-shaped pictures are
   trimmed to fit, everything else sits on a blurred copy of itself. Low-resolution images are
   skipped rather than blown up.
@@ -272,9 +278,11 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.frameart.pli
   [Wikimedia Commons](https://commons.wikimedia.org) (each file's own licence, credited in the
   panel), the [NASA Image and Video Library](https://images.nasa.gov) (public domain) and
   [Unsplash](https://unsplash.com) ([Unsplash Licence](https://unsplash.com/license)).
+  Apple TV aerial stills come from Apple's own screen-saver films (© Apple); nothing of
+  Apple's is stored in or shipped with this repo.
 - TV control: [samsungtvws](https://github.com/xchwarze/samsung-tv-ws-api).
 - Not affiliated with or endorsed by Samsung, The Metropolitan Museum of Art, the Cleveland
-  Museum of Art, the Wikimedia Foundation, NASA, Unsplash, or Anthropic.
+  Museum of Art, the Wikimedia Foundation, NASA, Unsplash, Apple, or Anthropic.
   "The Frame" is a Samsung trademark. Respect the Met's [Open Access terms](https://www.metmuseum.org/about-the-met/policies-and-documents/open-access).
 
 ## License
