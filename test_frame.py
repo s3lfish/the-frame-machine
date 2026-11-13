@@ -1205,6 +1205,33 @@ class TestFavouritesOnly(TempState):
             self.assertEqual(fp._gather(_run_args(source="favourites"), None, 1), ["p"])
         self.assertEqual(seen, ["modern"])
 
+    def test_a_reshow_only_picks_a_favourite_from_the_configured_source(self):
+        """Bug (2026-11-13): with the aerials configured, a scheduled run's 20% reshow put a Met
+        favourite from the museum days back on the TV."""
+        fp._save_list(fp.FAVOURITES, [self._fav("met:37224"), self._fav("aerial:A1")])
+        for _ in range(20):
+            with Patch(fp, FAV_CHANCE=1.0):
+                out = fp._gather(_run_args(source=fp.AERIAL_SOURCE, preview=None), None, 5)
+            self.assertTrue(out[0].endswith("aerial:A1.jpg"), out)
+
+    def test_no_favourite_from_the_source_means_fresh_art(self):
+        fp._save_list(fp.FAVOURITES, [self._fav("met:37224")])
+        with Patch(fp, FAV_CHANCE=1.0, _fetch_with_retries=lambda args, m, c: ["fresh"]):
+            self.assertEqual(fp._gather(_run_args(source=fp.AERIAL_SOURCE, preview=None), None, 5), ["fresh"])
+
+    def test_the_no_fresh_art_fallback_stays_in_the_source_too(self):
+        fp._save_list(fp.FAVOURITES, [self._fav("met:37224")])
+        with Patch(fp, FAV_CHANCE=0.0, _fetch_with_retries=lambda args, m, c: []):
+            self.assertEqual(fp._gather(_run_args(source=fp.AERIAL_SOURCE, preview=None), None, 5), [])
+
+    def test_a_pool_covers_its_sources(self):
+        self.assertEqual(set(fp.source_prefixes("modern")), {"wm:", "nasa:", "us:"})
+        self.assertEqual(fp.source_prefixes("met"), ("met:",))
+        self.assertEqual(fp.source_prefixes(fp.AERIAL_SOURCE), ("aerial:",))
+        for src in fp.SOURCE_CHOICES:
+            if src != fp.FAVOURITES_SOURCE:
+                self.assertTrue(fp.source_prefixes(src), src)
+
     def test_the_panel_and_the_pusher_both_offer_it(self):
         self.assertIn("favourites", fp.SOURCE_CHOICES)
         self.assertIn('value="favourites"', app.PAGE)
