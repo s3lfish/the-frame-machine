@@ -2228,7 +2228,17 @@ def run(args):
         raise RuntimeError("No images to upload.")
 
     def fresh_art():
-        return SamsungTVWS(host=ip, port=8002, token_file=args.token_file, timeout=args.timeout).art()
+        # SamsungTVWS is only imported inside open_art: calling it here raised a NameError
+        # that the retry's bare except swallowed, so every retry reused the dead socket.
+        return open_art(args, ip)
+
+    # Prep can take a minute (five aerial frame grabs), and the TV drops an art channel left
+    # idle that long ("Invalid close opcode 1005", then "socket is already closed" for every
+    # upload). Upload over a new connection, not the one opened before the prep.
+    try:
+        art = fresh_art()
+    except Exception as e:
+        print(f"  ! couldn't reopen the art channel, using the first one: {str(e)[:100]}", file=sys.stderr)
 
     print(f"Uploading {len(paths)} image(s)...")
     ids = []

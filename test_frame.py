@@ -1747,6 +1747,64 @@ class TestDoWipe(TempState):
         self.assertIn("Nothing to wipe", out)
 
 
+class TestRunUploadsOverAFreshConnection(TempState):
+    """Bug (2026-11-13): with fetch 5 the aerial prep took about a minute, the TV dropped the
+    art channel opened before it, and all five uploads failed. The retry's reconnect called
+    SamsungTVWS, which isn't imported at module level, so its NameError was swallowed and
+    every retry reused the dead socket."""
+
+    class Conn:
+        def __init__(self, dead):
+            self.dead, self.uploads = dead, []
+
+        def upload(self, data, file_type="JPEG", matte="none"):
+            if self.dead:
+                raise RuntimeError("socket is already closed.")
+            self.uploads.append(len(data))
+            return f"MY_F{len(self.uploads):04d}"
+
+        def select_image(self, cid, show=True):
+            self.shown = cid
+
+        def available(self, category=None):
+            return []
+
+    def _args(self):
+        return argparse.Namespace(watch=False, wipe=False, mat="blur", preview=None, force=True,
+                                  files=None, mac="a0:d0:5b:a0:e9:89", ip=None, token_file=None,
+                                  timeout=30, no_wake=True, fetch=2, upload_retries=2, no_select=False,
+                                  replace=False, keep=5, slideshow=None, no_record=True)
+
+    def test_uploads_go_over_a_connection_opened_after_the_prep(self):
+        os.makedirs(fp.TMP, exist_ok=True)
+        paths = []
+        for n in range(2):
+            p = os.path.join(fp.TMP, f"{n}.jpg"); Image.new("RGB", (64, 36)).save(p); paths.append(p)
+        conns = []
+        def open_art(args, ip):
+            conns.append(self.Conn(dead=not conns))          # the first connection goes stale
+            return conns[-1]
+        with Patch(fp, locate_frame=lambda a: "192.168.4.52", open_art=open_art,
+                   purge_banned=lambda art: None, _gather=lambda args, mat, count: paths):
+            fp.run(self._args())
+        self.assertGreaterEqual(len(conns), 2)
+        self.assertEqual(sum(len(c.uploads) for c in conns), 2, "not every image was uploaded")
+        self.assertEqual(conns[0].uploads, [])
+
+    def test_a_retry_really_reconnects(self):
+        os.makedirs(fp.TMP, exist_ok=True)
+        p = os.path.join(fp.TMP, "0.jpg"); Image.new("RGB", (64, 36)).save(p)
+        conns = []
+        def open_art(args, ip):
+            conns.append(self.Conn(dead=len(conns) < 2))     # stale before and after the prep
+            return conns[-1]
+        with Patch(fp, locate_frame=lambda a: "192.168.4.52", open_art=open_art,
+                   purge_banned=lambda art: None, _gather=lambda args, mat, count: [p]):
+            fp.run(self._args())
+        self.assertEqual(len(conns), 3)
+        self.assertEqual(conns[2].uploads != [], True)
+
+
 # ------------------------------------------------------------------------- the panel
 SERVICE_COMMANDS = ("crontab", "launchctl")
 
